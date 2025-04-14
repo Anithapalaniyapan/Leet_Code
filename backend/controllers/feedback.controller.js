@@ -73,12 +73,13 @@ exports.submitFeedback = async (req, res) => {
       });
     }
 
-    // Create new feedback
+    // Create new feedback with optional meetingId
     const feedback = await Feedback.create({
       rating: req.body.rating,
       notes: req.body.notes,
       userId: req.userId,
-      questionId: req.body.questionId
+      questionId: req.body.questionId,
+      meetingId: req.body.meetingId || null // Add support for meetingId
     });
 
     res.status(201).send({
@@ -102,16 +103,23 @@ exports.getFeedbackByUser = async (req, res) => {
 
     const feedback = await Feedback.findAll({
       where: { userId: userId },
-      include: [{
-        model: Question,
-        as: 'question',
-        attributes: ['id', 'text', 'year'],
-        include: [{
-          model: Department,
-          as: 'department',
-          attributes: ['id', 'name']
-        }]
-      }]
+      include: [
+        {
+          model: Question,
+          as: 'question',
+          attributes: ['id', 'text', 'year'],
+          include: [{
+            model: Department,
+            as: 'department',
+            attributes: ['id', 'name']
+          }]
+        },
+        {
+          model: db.meeting,
+          as: 'meeting',
+          attributes: ['id', 'title', 'date', 'time']
+        }
+      ]
     });
 
     res.status(200).send(feedback);

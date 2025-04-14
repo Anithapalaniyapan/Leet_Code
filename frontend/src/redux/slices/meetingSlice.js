@@ -77,7 +77,8 @@ export const fetchMeetings = createAsyncThunk(
         return rejectWithValue('No authentication token found');
       }
       
-      const response = await axios.get('http://localhost:8080/api/meetings', {
+      // Updated to use the user-specific endpoint instead of general meetings endpoint
+      const response = await axios.get('http://localhost:8080/api/meetings/user/current', {
         headers: {
           'x-access-token': auth.token
         }

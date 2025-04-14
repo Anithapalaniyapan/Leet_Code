@@ -50,18 +50,8 @@ const StudentDashboard = () => {
     email: 'john.doe@university.edu'
   });
   const [meetings, setMeetings] = useState([]);
-  const [questions, setQuestions] = useState([
-    { id: 1, text: 'How would you rate the course content?' },
-    { id: 2, text: 'How would you rate the instructor\'s teaching?' },
-    { id: 3, text: 'How would you rate the learning environment?' },
-    { id: 4, text: 'How would you rate the overall experience?' }
-  ]);
-  const [ratings, setRatings] = useState({
-    1: 0,
-    2: 0,
-    3: 0,
-    4: 0
-  });
+  const [questions, setQuestions] = useState([]);
+  const [ratings, setRatings] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [snackbar, setSnackbar] = useState({
@@ -75,6 +65,8 @@ const StudentDashboard = () => {
     minutesLeft: 45,
     secondsLeft: 30
   });
+  const [questionsLoading, setQuestionsLoading] = useState(false);
+  const [questionsError, setQuestionsError] = useState('');
 
   // Check authentication and role on component mount
   useEffect(() => {
@@ -356,111 +348,59 @@ const StudentDashboard = () => {
     }
   }, []);
 
-  // Fetch questions for feedback
-  const fetchQuestions = async (meetingId) => {
+  // Add useEffect for fetching questions
+  useEffect(() => {
+    if (activeSection === 'feedback') {
+      fetchQuestions();
+    }
+  }, [activeSection]);
+
+  // Update fetchQuestions function
+  const fetchQuestions = async () => {
+    setQuestionsLoading(true);
     try {
-      setLoading(true);
-      
-      // First try to fetch from API
       const token = localStorage.getItem('token');
       if (!token) {
         throw new Error('No authentication token found');
       }
-      
-      console.log(`Fetching questions for meeting ID: ${meetingId}`);
-      
-      // Use the global API instance with interceptors
-      const response = await API.get(`/questions/meeting/${meetingId}`);
-      
-      if (response.data && Array.isArray(response.data) && response.data.length > 0) {
-        console.log('API returned questions:', response.data);
+
+      const userData = JSON.parse(localStorage.getItem('userData')) || {};
+      const departmentId = userData.departmentId || userData.department?.id || 5;
+      const yearOfStudy = userData.year || 4;
+
+      console.log('Fetching questions for department:', departmentId, 'year:', yearOfStudy);
+
+      const response = await axios.get(
+        `http://localhost:8080/api/questions/department/${departmentId}/year/${yearOfStudy}?role=student`,
+        {
+          headers: {
+            'x-access-token': token
+          }
+        }
+      );
+
+      if (response.data && Array.isArray(response.data)) {
+        console.log('Received questions:', response.data);
         setQuestions(response.data);
         
-        // Reset the ratings since we have new questions
-        setRatings({});
+        // Initialize ratings state for new questions
+        const newRatings = {};
+        response.data.forEach(question => {
+          newRatings[question.id] = 0;
+        });
+        setRatings(newRatings);
         
-        // Show the feedback section
-        setActiveSection('feedback');
-        
-        return;
+        setQuestionsError('');
+      } else {
+        setQuestions([]);
+        setQuestionsError('No questions available for your year and department');
       }
-      
-      console.log('API returned no questions or invalid data. Trying localStorage...');
-      
-      // API failed, try to load from localStorage
-      const storedQuestions = localStorage.getItem('submittedQuestions') || localStorage.getItem('questions');
-      
-      if (storedQuestions) {
-        try {
-          const parsedQuestions = JSON.parse(storedQuestions);
-          
-          if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
-            console.log('Found questions in localStorage:', parsedQuestions);
-            
-            // Use a standard set of questions for the demo
-            const standardQuestions = [
-              { id: 1, text: 'How would you rate the course content?' },
-              { id: 2, text: 'How would you rate the instructor\'s teaching?' },
-              { id: 3, text: 'How would you rate the learning environment?' },
-              { id: 4, text: 'How would you rate the overall experience?' }
-            ];
-            
-            setQuestions(parsedQuestions.length > 0 ? parsedQuestions : standardQuestions);
-            
-            // Reset the ratings since we have new questions
-            setRatings({});
-            
-            // Show the feedback section
-            setActiveSection('feedback');
-            
-            setSnackbar({
-              open: true,
-              message: 'Loaded questions from local storage',
-              severity: 'info'
-            });
-            
-            return;
-          }
-        } catch (parseError) {
-          console.error('Error parsing questions from localStorage:', parseError);
-        }
-      }
-      
-      // If we get here, we couldn't load from API or localStorage, use default questions
-      console.log('Using default questions');
-      
-      // Use a standard set of questions for the demo
-      setQuestions([
-        { id: 1, text: 'How would you rate the course content?' },
-        { id: 2, text: 'How would you rate the instructor\'s teaching?' },
-        { id: 3, text: 'How would you rate the learning environment?' },
-        { id: 4, text: 'How would you rate the overall experience?' }
-      ]);
-      
-      // Reset the ratings
-      setRatings({});
-      
-      // Show the feedback section
-      setActiveSection('feedback');
     } catch (error) {
       console.error('Error fetching questions:', error);
-      setError('Failed to load questions. Please try again.');
-      
-      // Use default questions as fallback
-      setQuestions([
-        { id: 1, text: 'How would you rate the course content?' },
-        { id: 2, text: 'How would you rate the instructor\'s teaching?' },
-        { id: 3, text: 'How would you rate the learning environment?' },
-        { id: 4, text: 'How would you rate the overall experience?' }
-      ]);
-      
-      // Reset the ratings
-      setRatings({});
-      
-      // Still show the feedback section despite the error
-      setActiveSection('feedback');
+      setQuestionsError('Failed to fetch questions. Please try again later.');
+      setQuestions([]);
     } finally {
-      setLoading(false);
+      setQuestionsLoading(false);
     }
   };
 
@@ -753,38 +693,61 @@ const StudentDashboard = () => {
     <Paper sx={{ p: 4, borderRadius: 0 }}>
       <Typography variant="h5" sx={{ fontWeight: 'bold', mb: 4 }}>Submit Feedback</Typography>
       
-      {questions.map((question) => (
-        <Box key={question.id} sx={{ mb: 4 }}>
-          <Typography variant="body1" gutterBottom>
-            {question.text}
-            </Typography>
-          <Rating
-            name={`rating-${question.id}`}
-            value={ratings[question.id] || 0}
-            onChange={(event, newValue) => handleRatingChange(question.id, newValue)}
-            size="medium"
-            sx={{ color: '#FFD700', mt: 1 }}
-          />
+      {questionsLoading ? (
+        <Box sx={{ display: 'flex', justifyContent: 'center', my: 4 }}>
+          <CircularProgress />
+        </Box>
+      ) : questionsError ? (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {questionsError}
+          <Button 
+            size="small" 
+            onClick={fetchQuestions} 
+            sx={{ ml: 2 }}
+          >
+            Retry
+          </Button>
+        </Alert>
+      ) : questions.length === 0 ? (
+        <Alert severity="info">
+          No feedback questions available for your year and department.
+        </Alert>
+      ) : (
+        <>
+          {questions.map((question) => (
+            <Box key={question.id} sx={{ mb: 4 }}>
+              <Typography variant="body1" gutterBottom>
+                {question.text}
+              </Typography>
+              <Rating
+                name={`rating-${question.id}`}
+                value={ratings[question.id] || 0}
+                onChange={(event, newValue) => handleRatingChange(question.id, newValue)}
+                size="medium"
+                sx={{ color: '#FFD700', mt: 1 }}
+              />
             </Box>
-      ))}
-      
-      <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
-        <Button 
-          variant="contained" 
-          onClick={handleSubmitFeedback} 
-          disabled={loading}
-          sx={{ 
-            bgcolor: '#1A2137', 
-            '&:hover': { bgcolor: '#2A3147' },
-            fontWeight: 'medium',
-            px: 4,
-            py: 1
-          }}
-        >
-          {loading ? 'Submitting...' : 'Submit Feedback'}
-        </Button>
+          ))}
+          
+          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
+            <Button 
+              variant="contained" 
+              onClick={handleSubmitFeedback} 
+              disabled={loading}
+              sx={{ 
+                bgcolor: '#1A2137', 
+                '&:hover': { bgcolor: '#2A3147' },
+                fontWeight: 'medium',
+                px: 4,
+                py: 1
+              }}
+            >
+              {loading ? 'Submitting...' : 'Submit Feedback'}
+            </Button>
           </Box>
-        </Paper>
+        </>
+      )}
+    </Paper>
   );
 
   // Render meeting schedule section
