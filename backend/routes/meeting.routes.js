@@ -10,10 +10,10 @@ module.exports = function(app) {
     next();
   });
 
-  // Create a new meeting
+  // Create a new meeting - restricted to Academic Directors only
   app.post(
     '/api/meetings',
-    [authJwt.verifyToken],
+    [authJwt.verifyToken, authJwt.isAcademicDirector],
     controller.createMeeting
   );
 
@@ -22,6 +22,13 @@ module.exports = function(app) {
     '/api/meetings',
     [authJwt.verifyToken],
     controller.getAllMeetings
+  );
+
+  // Get meetings specific to the current user based on role, department, and year
+  app.get(
+    '/api/meetings/user/current',
+    [authJwt.verifyToken],
+    controller.getMeetingsForCurrentUser
   );
 
   // Get meetings by department and year
@@ -38,10 +45,10 @@ module.exports = function(app) {
     controller.getMeetingById
   );
 
-  // Update meeting
+  // Update meeting - restricted to Academic Directors only
   app.put(
     '/api/meetings/:id',
-    [authJwt.verifyToken],
+    [authJwt.verifyToken, authJwt.isAcademicDirector],
     controller.updateMeeting
   );
 

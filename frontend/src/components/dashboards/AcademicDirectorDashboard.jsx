@@ -46,7 +46,8 @@ import {
   FormControlLabel,
   RadioGroup,
   Radio,
-  FormLabel
+  FormLabel,
+  CircularProgress
 } from '@mui/material';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import QuestionAnswerIcon from '@mui/icons-material/QuestionAnswer';
@@ -67,12 +68,18 @@ import AssignmentIcon from '@mui/icons-material/Assignment';
 import PeopleIcon from '@mui/icons-material/People';
 import { blue } from '@mui/material/colors';
 import { BarChart, CartesianGrid, XAxis, YAxis, Tooltip, Bar, ResponsiveContainer } from 'recharts';
+import CreateMeetingForm from '../meeting/CreateMeetingForm';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import AddIcon from '@mui/icons-material/Add';
 
 const AcademicDirectorDashboard = () => {
+  console.log('AcademicDirectorDashboard component rendering');
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const navigate = useNavigate();
 
+  // Add initialization state to track when component is ready
+  const [initialized, setInitialized] = useState(false);
   const [activeTab, setActiveTab] = useState(0);
   const [targetRole, setTargetRole] = useState('student');
   const [department, setDepartment] = useState('');
@@ -157,6 +164,45 @@ const AcademicDirectorDashboard = () => {
     email: localStorage.getItem('userEmail') || 'academic.director@example.com'
   });
   
+  // Helper function to create a test meeting if none are available
+  const createTestMeeting = () => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    const formattedDate = tomorrow.toISOString().split('T')[0];
+    
+    const testMeeting = {
+      id: 'test-' + Date.now(),
+      title: 'Test Department Meeting',
+      meetingDate: formattedDate,
+      date: formattedDate,
+      startTime: '10:00',
+      endTime: '11:30',
+      description: 'A test meeting to verify functionality',
+      department: 'Computer Science',
+      departmentId: 1,
+      location: 'Room 101',
+      status: 'scheduled',
+      createdBy: parseInt(localStorage.getItem('userId') || '1')
+    };
+    
+    // Add to meetings list
+    const updatedMeetings = [...meetings, testMeeting];
+    setMeetings(updatedMeetings);
+    
+    // Store in localStorage
+    localStorage.setItem('meetings', JSON.stringify(updatedMeetings));
+    localStorage.setItem('submittedMeetings', JSON.stringify(updatedMeetings));
+    
+    setSnackbar({
+      open: true,
+      message: 'Created a test meeting for tomorrow',
+      severity: 'success'
+    });
+    
+    return testMeeting;
+  };
+
   // Load meetings from localStorage if there are any
   const loadMeetingsFromStorage = () => {
     try {
@@ -211,57 +257,197 @@ const AcademicDirectorDashboard = () => {
         throw new Error('No authentication token found');
       }
 
-      // Try to fetch from API first
-      try {
-        const response = await axios.get('http://localhost:8080/api/meetings', {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          }
-        });
-        
-        if (response.data && Array.isArray(response.data)) {
-          // Store the meetings in localStorage for offline access
-          localStorage.setItem('meetings', JSON.stringify(response.data));
-          setMeetings(response.data);
-        }
-      } catch (apiError) {
-        console.error('API fetch failed, trying localStorage:', apiError);
-        
-        // If API fails with 401, clear token and redirect to login
-        if (apiError.response?.status === 401) {
-          localStorage.removeItem('token');
-          setSnackbar({
-            open: true,
-            message: 'Session expired. Please log in again.',
-            severity: 'error'
+      console.log('Fetching meetings for Academic Director dashboard');
+      
+      // First, ensure we have departments loaded
+      if (departments.length === 0) {
+        try {
+          const departmentsResponse = await axios.get('http://localhost:8080/api/departments', {
+            headers: { 'x-access-token': token }
           });
+          
+          if (departmentsResponse.data && Array.isArray(departmentsResponse.data)) {
+            console.log('Departments fetched from API:', departmentsResponse.data);
+            setDepartments(departmentsResponse.data);
+          }
+        } catch (deptError) {
+          console.error('Error fetching departments:', deptError);
+          setError('Failed to load departments. Some department names may not display correctly.');
+        }
+      }
+      
+      // Then fetch meetings
+      try {
+        // Use API instance instead of fetch for consistent header handling
+        const response = await API.get('/meetings');
+        
+        if (response.data) {
+          console.log('Meetings received from API:', Array.isArray(response.data) ? response.data.length : 'Not an array');
+          
+          // Check if response is an array or has nested meeting categories
+          let allMeetings = [];
+          
+          if (Array.isArray(response.data)) {
+            allMeetings = response.data;
+          } else if (response.data.pastMeetings || response.data.currentMeetings || response.data.futureMeetings) {
+            // Handle categorized meetings
+            if (Array.isArray(response.data.pastMeetings)) allMeetings = [...allMeetings, ...response.data.pastMeetings];
+            if (Array.isArray(response.data.currentMeetings)) allMeetings = [...allMeetings, ...response.data.currentMeetings];
+            if (Array.isArray(response.data.futureMeetings)) allMeetings = [...allMeetings, ...response.data.futureMeetings];
+          }
+          
+          if (allMeetings.length > 0) {
+            // Sort and store meetings
+            sortAndSetMeetings(allMeetings);
+            
+            // Also set up countdowns
+            const now = new Date();
+            const upcomingMeetings = allMeetings
+              .filter(meeting => {
+                const meetingDate = new Date(meeting.meetingDate || meeting.date);
+                return !isNaN(meetingDate.getTime()) && meetingDate > now;
+              })
+              .sort((a, b) => {
+                const dateA = new Date(a.meetingDate || a.date);
+                const dateB = new Date(b.meetingDate || b.date);
+                return dateA - dateB;
+              });
+            
+            if (upcomingMeetings.length > 0) {
+              // Set up countdowns
+              const newCountdowns = {};
+              upcomingMeetings.forEach(meeting => {
+                const meetingTime = new Date(meeting.meetingDate || meeting.date);
+                const diffTime = meetingTime - now;
+                if (diffTime > 0) {
+                  const days = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                  const hours = Math.floor((diffTime % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                  const minutes = Math.floor((diffTime % (1000 * 60 * 60)) / (1000 * 60));
+                  const seconds = Math.floor((diffTime % (1000 * 60)) / 1000);
+                  
+                  newCountdowns[meeting.id] = { days, hours, minutes, seconds };
+                }
+              });
+              setMeetingCountdowns(newCountdowns);
+            }
+            
+            // Mark initialization complete and clear loading state
+            setInitialized(true);
+            setLoading(false);
+            return; // No need to proceed further
+          }
+        }
+        
+        // If we reach here, we didn't get any meetings from the API
+        console.log('No meetings data received from API, trying local data');
+        
+      } catch (apiError) {
+        // Just log the error, don't show to user
+        console.error('API request failed, trying local data:', apiError);
+      }
+      
+      // Try loading from localStorage as fallback
+      const loadedFromStorage = loadMeetingsFromStorage();
+      
+      // No automatic test meeting creation
+      if (!loadedFromStorage) {
+        console.log('No meetings found in storage');
+        // Set empty array for meetings instead of creating test meetings
+        setMeetings([]);
+      }
+      
+    } catch (error) {
+      // Just log the error, don't show to user
+      console.error('Error in fetchMeetings:', error);
+      
+      // Try loading from localStorage as fallback
+      loadMeetingsFromStorage();
+      // No automatic test meeting creation
+    } finally {
+      setLoading(false);
+      setInitialized(true); // Ensure initialization flag is set whether successful or not
+    }
+  };
+  
+  // Define tabs array for sidebar navigation
+  const tabs = [
+    { id: 0, label: "Profile", icon: <PersonIcon /> },
+    { id: 1, label: "Manage Meetings", icon: <EventIcon /> },
+    { id: 2, label: "Manage Questions", icon: <QuestionAnswerIcon /> },
+    { id: 3, label: "Analytics", icon: <BarChartIcon /> },
+    { id: 4, label: "View Reports", icon: <AssessmentIcon /> },
+    { id: 5, label: "View Schedule", icon: <VisibilityIcon /> }
+  ];
+
+  // Combine all initialization logic into ONE effect
+  useEffect(() => {
+    const initializeDashboard = async () => {
+      console.log('Initializing Academic Director dashboard');
+      try {
+        setLoading(true);
+        setError(null);
+        
+        // Check authentication
+        const token = localStorage.getItem('token');
+        if (!token) {
+          console.error('No authentication token found');
+          setError('Authentication required. Please log in again.');
           navigate('/login');
           return;
         }
         
-        // If API fails for other reasons, try to load from localStorage
-        const storedMeetings = localStorage.getItem('meetings');
-        if (storedMeetings) {
-          const parsedMeetings = JSON.parse(storedMeetings);
-          if (Array.isArray(parsedMeetings)) {
-            setMeetings(parsedMeetings);
-          }
+        // Set default state for meeting filter if not yet set
+        if (!meetingFilter) {
+          setMeetingFilter('all');
         }
+        
+        // Load departments first - this is critical for proper department display
+        try {
+          console.log('Fetching departments from API');
+          const departmentsResponse = await axios.get('http://localhost:8080/api/departments', {
+            headers: { 'x-access-token': token }
+          });
+          
+          if (departmentsResponse.data && Array.isArray(departmentsResponse.data)) {
+            console.log('Departments received from API:', departmentsResponse.data);
+            setDepartments(departmentsResponse.data);
+          } else {
+            console.error('Invalid departments data format:', departmentsResponse.data);
+            throw new Error('Invalid departments data received from API');
+          }
+        } catch (deptError) {
+          console.error('Error fetching departments:', deptError);
+          setError('Failed to load departments. Department names may not display correctly.');
+          // We will continue with other initialization, as this is not a critical error
+        }
+        
+        // Load meetings
+        try {
+          await fetchMeetings();
+          console.log('Meetings loaded successfully');
+        } catch (error) {
+          console.error('Error fetching meetings:', error);
+          setError('Failed to load meetings. Please try refreshing the page.');
+        }
+        
+        // Mark as initialized
+        setInitialized(true);
+      } catch (error) {
+        console.error('Error during dashboard initialization:', error);
+        setError('Failed to initialize dashboard. Please try refreshing the page.');
+      } finally {
+        setLoading(false);
       }
-    } catch (error) {
-      console.error('Error in fetchMeetings:', error);
-      setError(error.message);
-      setSnackbar({
-        open: true,
-        message: error.message || 'Failed to load meetings. Please try again later.',
-        severity: 'error'
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-  
+    };
+    
+    initializeDashboard();
+    
+    // Cleanup function
+    return () => {
+      console.log('Academic Director dashboard unmounting');
+    };
+  }, [navigate]);
+
   // Update countdown timers every second
   useEffect(() => {
     const timer = setInterval(() => {
@@ -296,169 +482,26 @@ const AcademicDirectorDashboard = () => {
     return () => clearInterval(timer);
   }, [meetings]);
 
-  // Add Performance Analytics as a dedicated tab option
-  const tabs = [
-    { id: 0, label: "Profile", icon: <PersonIcon /> },
-    { id: 1, label: "Manage Meetings", icon: <EventIcon /> },
-    { id: 2, label: "Manage Questions", icon: <QuestionAnswerIcon /> },
-    { id: 3, label: "Analytics", icon: <BarChartIcon /> },
-    { id: 4, label: "View Reports", icon: <AssessmentIcon /> },
-    { id: 5, label: "View Meeting Schedule", icon: <EventIcon /> }
-  ];
-
-  // Check authentication and role on component mount
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    const userRole = localStorage.getItem('userRole');
-    
-    // Check for authentication
-    if (!token) {
-      console.log('No token found, redirecting to login');
-      navigate('/login');
-      return;
-    }
-    
-    // Normalize and check role - be flexible with role format
-    const normalizedRole = userRole ? userRole.toLowerCase() : '';
-    const isAcademicDirector = 
-      normalizedRole === 'academic_director' || 
-      normalizedRole === 'academic-director' || 
-      normalizedRole === 'academicdirector' ||
-      normalizedRole.includes('academic');
-    
-    if (!isAcademicDirector) {
-      console.log(`Invalid role for academic director dashboard: ${userRole}`);
-      setSnackbar({
-        open: true,
-        message: 'You do not have permission to access this dashboard',
-        severity: 'error'
-      });
-      navigate('/login');
-      return;
-    }
-    
-    console.log('Authentication successful for Academic Director dashboard');
-    
-    // Load meetings from localStorage first
-    loadMeetingsFromStorage();
-    
-    // Then try to fetch from API
-    fetchMeetings();
-  }, [navigate]);
-
-  // Add a function to fetch user profile
-  useEffect(() => {
-    const fetchUserProfile = async () => {
-      try {
-        // Check if token exists
-        const token = localStorage.getItem('token');
-        console.log('Token for profile fetch:', token);
-        
-        if (!token) {
-          throw new Error('No authentication token found');
-        }
-        
-        // First try to get from localStorage
-        const storedUserData = localStorage.getItem('userData');
-        if (storedUserData) {
-          const userData = JSON.parse(storedUserData);
-          console.log('Using profile data from localStorage:', userData);
-          
-          // Update profile with stored data but maintain Academic Director role
-          setProfileData({
-            name: 'Academic Director',
-            role: 'Academic Director',
-            department: 'Engineering',
-            id: userData.id || localStorage.getItem('userId') || '12345',
-            email: userData.email || localStorage.getItem('userEmail') || 'academic.director@example.com'
-          });
-          return;
-        }
-        
-        // If not in localStorage, fetch from API
-        const response = await API.get('/users/profile');
-        const userData = response.data;
-        console.log('Profile data from API:', userData);
-        
-        // Save to localStorage for future use
-        localStorage.setItem('userData', JSON.stringify(userData));
-        
-        // Update state with Academic Director info
-        setProfileData({
-          name: 'Academic Director',
-          role: 'Academic Director',
-          department: 'Engineering',
-          id: userData.id || '12345',
-          email: userData.email || 'academic.director@example.com'
-        });
-        
-      } catch (error) {
-        console.error('Error fetching user profile:', error);
-        
-        // Set default profile data if failed
-        setProfileData({
-          name: 'Academic Director',
-          role: 'Academic Director',
-          department: 'Engineering',
-          id: localStorage.getItem('userId') || '12345',
-          email: localStorage.getItem('userEmail') || 'academic.director@example.com'
-        });
-      }
-    };
-
-    fetchUserProfile();
-  }, []);
-
-  // Fetch departments with better error handling
-  useEffect(() => {
-    const fetchDepartments = async () => {
-      try {
-        // Use the global API instance with interceptors
-        const response = await API.get('/departments');
-        
-        if (response.data) {
-          setDepartments(response.data);
-          console.log('Departments loaded successfully:', response.data);
-        }
-      } catch (error) {
-        console.error('Error fetching departments:', error);
-        // Load default departments if API fails
-        setDepartments([
-          { id: '1', name: 'Computer Science and Engineering' },
-          { id: '2', name: 'Electrical Engineering' },
-          { id: '3', name: 'Mathematics' },
-          { id: '4', name: 'Staff Department' },
-          { id: '5', name: 'Information Technology' },
-          { id: '6', name: 'Biomedical Engineering' },
-          { id: '7', name: 'Civil Engineering' },
-          { id: '8', name: 'Cyber Security' },
-          { id: '9', name: 'Electronics & Communication Engineering' },
-          { id: '5', name: 'Mechanical Engineering' }
-        ]);
-      }
-    };
-
-    fetchDepartments();
-  }, []);
-
-  // Ensure we start with the Profile tab
-  useEffect(() => {
-    setActiveTab(0);
-  }, []);
-
   const handleLogout = () => {
     localStorage.clear();
     navigate('/login', { replace: true });
   };
 
   const handleTabChange = (event, newValue) => {
-    setActiveTab(newValue);
-    setQuestions([]);
-    setNewQuestion('');
-    setEditQuestionId(null);
-    setDepartment('');
-    setYear('');
-    setStaff('');
+    console.log('Setting active tab to:', newValue);
+    // Only update if it's a different tab, to avoid unnecessary re-renders
+    if (activeTab !== newValue) {
+      setActiveTab(newValue);
+      // Clear question state only if changing to/from questions tab
+      if (newValue === 2 || activeTab === 2) {
+        setQuestions([]);
+        setNewQuestion('');
+        setEditQuestionId(null);
+        setDepartment('');
+        setYear('');
+        setStaff('');
+      }
+    }
   };
 
   const handleAddQuestion = () => {
@@ -906,65 +949,42 @@ const AcademicDirectorDashboard = () => {
       // Create a formatted meeting object that matches the backend expectations
       const meetingData = {
         title: newMeeting.title,
-        date: newMeeting.date,
+        description: newMeeting.description || '',
         meetingDate: newMeeting.date,
         startTime: newMeeting.startTime,
         endTime: newMeeting.endTime,
-        role: selectedRole, // Store the exact selected role
+        role: isStudent ? 1 : 2, // Convert to role ID - 1 for student, 2 for staff
         departmentId: newMeeting.department,
-        department: newMeeting.department,
-        year: isStudent ? newMeeting.year : null,
-        status: 'SCHEDULED',
-        visibility: {
-          role: normalizedRole,
-          department: newMeeting.department,
-          year: isStudent ? newMeeting.year : null,
-          academicDirector: true,
-          executiveDirector: true,
-          staff: normalizedRole === 'staff',
-          student: normalizedRole === 'student'
-        }
+        year: isStudent ? newMeeting.year : null  // Include year for student meetings
       };
       
       if (isEditing) {
         meetingData.id = newMeeting.editId;
-      } else {
-        meetingData.id = Date.now().toString();
       }
       
       // Attempt to use the actual API
       try {
-        let response;
-        if (isEditing) {
-          response = await API.put(`/meetings/${newMeeting.editId}`, meetingData);
-          console.log('Meeting updated successfully:', response.data);
-        } else {
-          response = await API.post('/meetings', meetingData);
-          console.log('Meeting added successfully:', response.data);
-        }
-        
-        // After API call succeeds, update the local state and storage
-        const updatedMeetings = isEditing 
-          ? meetings.map(m => m.id === meetingData.id ? meetingData : m)
-          : [...meetings, meetingData];
-        
-        // Update state
-        setMeetings(updatedMeetings);
-        
-        // Update localStorage with the complete meeting data
-        localStorage.setItem('meetings', JSON.stringify(updatedMeetings));
-        localStorage.setItem('submittedMeetings', JSON.stringify(updatedMeetings));
-        
-        // Show success message
-        setSnackbar({
-          open: true,
-          message: isEditing
-            ? `Meeting updated successfully!`
-            : `${selectedRole} meeting added successfully!`,
-          severity: 'success'
+        const response = await axios.post('http://localhost:8080/api/meetings', meetingData, {
+          headers: {
+            'x-access-token': localStorage.getItem('token')
+          }
         });
         
-        // Clear the form
+        console.log('Meeting created successfully:', response.data);
+        
+        // Add the new meeting to the local state
+        const updatedMeetings = [...meetings, {
+          ...meetingData,
+          id: response.data.meeting.id,
+          date: meetingData.meetingDate,
+          department: meetingData.departmentId,
+          status: 'scheduled',
+          createdAt: new Date().toISOString()
+        }];
+        
+        setMeetings(updatedMeetings);
+        
+        // Reset form
         setNewMeeting({
           title: '',
           date: '',
@@ -973,45 +993,29 @@ const AcademicDirectorDashboard = () => {
           role: '',
           department: '',
           year: '',
-          submitted: false,
-          editId: null
+          submitted: false
         });
-      } catch (apiError) {
-        console.error('API error:', apiError);
         
-        if (apiError.response?.status === 401) {
-          setSnackbar({
-            open: true,
-            message: 'Session expired. Please log in again.',
-            severity: 'error'
-          });
-          navigate('/login');
-          return;
-        }
-        
-        // For other errors, save to localStorage as fallback
-        const updatedMeetings = isEditing 
-          ? meetings.map(m => m.id === meetingData.id ? meetingData : m)
-          : [...meetings, meetingData];
-        
-        // Update state
-        setMeetings(updatedMeetings);
-        
-        // Save to localStorage
-        localStorage.setItem('meetings', JSON.stringify(updatedMeetings));
-        localStorage.setItem('submittedMeetings', JSON.stringify(updatedMeetings));
-        
-          setSnackbar({
-            open: true,
-          message: `Meeting ${isEditing ? 'updated' : 'added'} successfully (using offline mode)!`,
+        // Show success message
+        setSnackbar({
+          open: true,
+          message: isEditing ? 'Meeting updated successfully' : 'Meeting created successfully',
           severity: 'success'
+        });
+        
+      } catch (apiError) {
+        console.error('Error creating meeting:', apiError);
+        setSnackbar({
+          open: true,
+          message: `Error: ${apiError.response?.data?.message || apiError.message || 'Failed to create meeting'}`,
+          severity: 'error'
         });
       }
     } catch (error) {
       console.error('Error in handleAddMeeting:', error);
       setSnackbar({
         open: true,
-        message: 'An unexpected error occurred. Please try again.',
+        message: `Error: ${error.message}`,
         severity: 'error'
       });
     }
@@ -1024,21 +1028,14 @@ const AcademicDirectorDashboard = () => {
       return departmentId.name || departmentId.id || 'Unknown Department';
     }
     
-    // Handle string department IDs
-    switch(String(departmentId)) {
-      case '1':
-        return 'Computer Science';
-      case '2':
-        return 'Information Technology';
-      case '3':
-        return 'Electronics and Communication';
-      case '4':
-        return 'Electrical Engineering';
-      case '5':
-        return 'Mechanical Engineering';
-      default:
-        return departmentId || 'Unknown Department';
+    // Look up department in the departments state array
+    const department = departments.find(dept => dept.id == departmentId);
+    if (department) {
+      return department.name;
     }
+    
+    // Return the ID if not found
+    return departmentId || 'Unknown Department';
   };
 
   const handleSubmitMeetingSchedule = async () => {
@@ -1324,287 +1321,35 @@ const AcademicDirectorDashboard = () => {
     </Box>
   );
 
-  const renderMeetingManagement = () => (
-    <Paper sx={{ p: 3, borderRadius: 2, boxShadow: '0 2px 10px rgba(0,0,0,0.08)' }}>
-      <Typography variant="h6" gutterBottom sx={{ color: theme.palette.primary.main, fontWeight: 600, mb: 3 }}>
-        Manage Meetings
-      </Typography>
-      <Grid container spacing={3}>
-        <Grid item xs={12} id="meeting-form">
-          <Typography variant="subtitle1" gutterBottom>
-            {newMeeting.editId ? 'Edit Meeting' : 'Add New Meeting'}
-          </Typography>
-          <Grid container spacing={2}>
-            <Grid item xs={12} md={6}>
-              <TextField
-                fullWidth
-                label="Meeting Title"
-                value={newMeeting.title}
-                onChange={(e) => setNewMeeting({ ...newMeeting, title: e.target.value })}
-                required
-                error={!newMeeting.title && newMeeting.submitted}
-                helperText={!newMeeting.title && newMeeting.submitted ? "Title is required" : ""}
-              />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField
-                fullWidth
-                label="Date"
-                type="date"
-                value={newMeeting.date}
-                onChange={(e) => setNewMeeting({ ...newMeeting, date: e.target.value })}
-                InputLabelProps={{ shrink: true }}
-                InputProps={{
-                  inputProps: { min: new Date().toISOString().split('T')[0] }
-                }}
-                required
-                error={!newMeeting.date && newMeeting.submitted}
-                helperText={!newMeeting.date && newMeeting.submitted ? "Date is required" : ""}
-              />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField
-                fullWidth
-                label="Start Time"
-                type="time"
-                value={newMeeting.startTime}
-                onChange={(e) => setNewMeeting({ ...newMeeting, startTime: e.target.value })}
-                InputLabelProps={{ shrink: true }}
-                required
-                error={!newMeeting.startTime && newMeeting.submitted}
-                helperText={!newMeeting.startTime && newMeeting.submitted ? "Start time is required" : ""}
-              />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <TextField
-                fullWidth
-                label="End Time"
-                type="time"
-                value={newMeeting.endTime}
-                onChange={(e) => setNewMeeting({ ...newMeeting, endTime: e.target.value })}
-                InputLabelProps={{ shrink: true }}
-                required
-                error={!newMeeting.endTime && newMeeting.submitted}
-                helperText={!newMeeting.endTime && newMeeting.submitted ? "End time is required" : ""}
-              />
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <FormControl fullWidth required error={!newMeeting.role && newMeeting.submitted}>
-                <InputLabel id="role-select-label">Attendee Role</InputLabel>
-                <Select
-                  labelId="role-select-label"
-                  value={newMeeting.role}
-                  label="Attendee Role"
-                  onChange={(e) => setNewMeeting({ ...newMeeting, role: e.target.value })}
-                >
-                  <MenuItem value="student">Student</MenuItem>
-                  <MenuItem value="staff">Staff</MenuItem>
-                </Select>
-                {!newMeeting.role && newMeeting.submitted && (
-                  <FormHelperText>Role is required</FormHelperText>
-                )}
-              </FormControl>
-            </Grid>
-            <Grid item xs={12} md={6}>
-              <FormControl fullWidth required error={!newMeeting.department && newMeeting.submitted}>
-                <InputLabel id="department-select-label">Department</InputLabel>
-                <Select
-                  labelId="department-select-label"
-                  value={newMeeting.department}
-                  label="Department"
-                  onChange={(e) => setNewMeeting({ ...newMeeting, department: e.target.value })}
-                >
-                  {departments.map(dept => (
-                    <MenuItem key={dept.id} value={dept.id}>
-                      {dept.name}
-                    </MenuItem>
-                  ))}
-                </Select>
-                {!newMeeting.department && newMeeting.submitted && (
-                  <FormHelperText>Department is required</FormHelperText>
-                )}
-              </FormControl>
-            </Grid>
-            {newMeeting.role === 'student' && (
-              <Grid item xs={12} md={6}>
-                <FormControl fullWidth required error={newMeeting.role === 'student' && !newMeeting.year && newMeeting.submitted}>
-                  <InputLabel id="year-select-label">Year</InputLabel>
-                  <Select
-                    labelId="year-select-label"
-                    value={newMeeting.year}
-                    label="Year"
-                    onChange={(e) => setNewMeeting({ ...newMeeting, year: e.target.value })}
-                  >
-                    <MenuItem value="1">First Year</MenuItem>
-                    <MenuItem value="2">Second Year</MenuItem>
-                    <MenuItem value="3">Third Year</MenuItem>
-                    <MenuItem value="4">Fourth Year</MenuItem>
-                  </Select>
-                  {newMeeting.role === 'student' && !newMeeting.year && newMeeting.submitted && (
-                    <FormHelperText>Year is required for student meetings</FormHelperText>
-                  )}
-                </FormControl>
-              </Grid>
-            )}
-            <Grid item xs={12}>
-              <Box sx={{ display: 'flex', gap: 2 }}>
-                <Button 
-                  variant="contained" 
-                  color="primary"
-                  onClick={() => {
-                    setNewMeeting(prev => ({ ...prev, submitted: true }));
-                    handleAddMeeting();
-                  }}
-                  sx={{ mt: 2 }}
-                >
-                  {newMeeting.editId ? 'Update Meeting' : 'Add Meeting'}
-                </Button>
-                
-                {newMeeting.editId && (
-                  <Button 
-                    variant="outlined"
-                    onClick={() => {
-                      setNewMeeting({
-                        title: '',
-                        date: '',
-                        startTime: '',
-                        endTime: '',
-                        role: '',
-                        department: '',
-                        year: '',
-                        submitted: false,
-                        editId: null
-                      });
-                    }}
-                    sx={{ mt: 2 }}
-                  >
-                    Cancel Edit
-                  </Button>
-                )}
-              </Box>
-            </Grid>
-          </Grid>
-        </Grid>
+  const renderMeetingManagement = () => {
+    console.log('Rendering meeting management component');
+    return (
+      <Box sx={{ p: 3 }}>
+        <Typography variant="h5" sx={{ mb: 3, fontWeight: 'bold' }}>
+          Create New Meeting
+        </Typography>
         
-        <Grid item xs={12}>
-          <Divider sx={{ my: 3 }} />
-          <Typography variant="subtitle1" gutterBottom>
-            View & Manage Scheduled Meetings
-          </Typography>
-          
-          <Box sx={{ mb: 2 }}>
-            <FormControl component="fieldset">
-              <FormLabel component="legend">Filter Meetings</FormLabel>
-              <RadioGroup
-                row
-                value={meetingFilter}
-                onChange={(e) => setMeetingFilter(e.target.value)}
-              >
-                <FormControlLabel value="all" control={<Radio />} label="All Meetings" />
-                <FormControlLabel value="student" control={<Radio />} label="Student Meetings" />
-                <FormControlLabel value="staff" control={<Radio />} label="Staff Meetings" />
-              </RadioGroup>
-            </FormControl>
-          </Box>
-          
-          {meetings.length === 0 ? (
-            <Paper sx={{ p: 3, textAlign: 'center', bgcolor: '#f5f5f7', borderRadius: 1 }}>
-              <Typography>No meetings scheduled yet.</Typography>
-            </Paper>
-          ) : (
-            <TableContainer component={Paper} sx={{ borderRadius: 1, boxShadow: 'none', border: '1px solid #e0e0e0' }}>
-              <Table>
-                <TableHead sx={{ bgcolor: '#f5f5f7' }}>
-                  <TableRow>
-                    <TableCell>Title</TableCell>
-                    <TableCell>Date</TableCell>
-                    <TableCell>Time</TableCell>
-                    <TableCell>Role</TableCell>
-                    <TableCell>Department</TableCell>
-                    <TableCell>Year</TableCell>
-                    <TableCell>Status</TableCell>
-                    <TableCell>Actions</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {meetings
-                    .filter(meeting => {
-                      if (meetingFilter === 'all') return true;
-                      const meetingRole = (meeting.role || '').toLowerCase().trim();
-                      const filterRole = meetingFilter.toLowerCase().trim();
-                      return meetingRole === filterRole;
-                    })
-                    .map((meeting, index) => {
-                      // Safely handle undefined role with a default value
-                      const roleDisplay = meeting.role || 'Not specified';
-                      const normalizedRole = roleDisplay.toLowerCase().trim();
-
-  return (
-                        <TableRow key={meeting.id || index}>
-                          <TableCell>{meeting.title}</TableCell>
-                          <TableCell>
-                            {new Date(meeting.date || meeting.meetingDate).toLocaleDateString()}
-                          </TableCell>
-                          <TableCell>{meeting.startTime} - {meeting.endTime}</TableCell>
-                          <TableCell>
-                            <Chip 
-                              label={roleDisplay}
-                              color={normalizedRole === 'student' ? 'primary' : 'secondary'}
-                              variant="outlined"
-                              size="small"
-                            />
-                          </TableCell>
-                          <TableCell>
-                            {getDepartmentName(meeting.department || meeting.departmentId)}
-                          </TableCell>
-                          <TableCell>
-                            {normalizedRole === 'student' ? (meeting.year || '-') : '-'}
-                          </TableCell>
-                          <TableCell>
-                            <Chip 
-                              label="scheduled"
-                              color="warning"
-                              size="small"
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <IconButton 
-                              size="small"
-                              onClick={() => handleEditMeeting(meeting)}
-                              title="Edit meeting"
-                            >
-                              <EditIcon fontSize="small" />
-                            </IconButton>
-                            <IconButton 
-                              size="small"
-                              onClick={() => handleDeleteMeeting(meeting.id)}
-                              title="Delete meeting"
-                            >
-                              <DeleteIcon fontSize="small" />
-                            </IconButton>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          )}
-          
-          <Box sx={{ mt: 3, textAlign: 'right' }}>
-            <Button 
-              variant="contained" 
-              color="primary"
-              onClick={handleSubmitMeetingSchedule}
-              disabled={meetings.length === 0}
-            >
-              Submit Meeting Schedule
-            </Button>
-          </Box>
-        </Grid>
-      </Grid>
-    </Paper>
-  );
+        <CreateMeetingForm 
+          onMeetingCreated={(newMeeting) => {
+            console.log('New meeting created:', newMeeting);
+            // Add the new meeting to the list
+            const updatedMeetings = [...meetings, newMeeting];
+            sortAndSetMeetings(updatedMeetings);
+            
+            // Show a success message
+            setSnackbar({
+              open: true,
+              message: 'Meeting created successfully',
+              severity: 'success'
+            });
+            
+            // Switch to view meetings tab
+            setActiveTab(5); // View Schedule tab
+          }}
+        />
+      </Box>
+    );
+  };
 
   // Render analytics section with performance charts
   const renderAnalytics = () => {
@@ -1717,70 +1462,232 @@ const AcademicDirectorDashboard = () => {
     );
   };
 
-  const renderViewMeetingSchedule = () => {
-    return (
-      <Paper sx={{ p: 4, borderRadius: 0 }}>
-        <Typography variant="h5" sx={{ fontWeight: 'bold', mb: 4 }}>View Meeting Schedule</Typography>
-        
-        {meetings.length === 0 ? (
-          <Paper sx={{ p: 3, textAlign: 'center', bgcolor: '#f5f5f7', borderRadius: 1 }}>
-            <Typography>No meetings scheduled yet.</Typography>
-          </Paper>
-        ) : (
-          <TableContainer component={Paper} sx={{ borderRadius: 1, boxShadow: 'none', border: '1px solid #e0e0e0' }}>
-            <Table>
-              <TableHead sx={{ bgcolor: '#f5f5f7' }}>
-                <TableRow>
-                  <TableCell>Title</TableCell>
-                  <TableCell>Date</TableCell>
-                  <TableCell>Time</TableCell>
-                  <TableCell>Role</TableCell>
-                  <TableCell>Department</TableCell>
-                  <TableCell>Year</TableCell>
-                  <TableCell>Status</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {meetings.map((meeting, index) => {
-                  const dateValue = meeting.date || meeting.meetingDate;
-                  const formattedDate = dateValue ? new Date(dateValue).toLocaleDateString() : '';
-                  const roleDisplay = meeting.role || '';
-                  const timeDisplay = meeting.startTime && meeting.endTime
-                    ? `${meeting.startTime} - ${meeting.endTime}`
-                    : '';
-                  const departmentName = getDepartmentName(meeting.department || meeting.departmentId);
-                  const yearDisplay = roleDisplay.toLowerCase().trim() === 'student' ? (meeting.year || '-') : '-';
+  // Content mapping based on active tab
+  const renderContent = () => {
+    // Display loading indicator if not initialized
+    if (loading) {
+      return (
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', my: 8 }}>
+          <CircularProgress />
+          <Typography variant="body1" sx={{ mt: 2 }}>
+            Loading dashboard...
+          </Typography>
+        </Box>
+      );
+    }
+    
+    // Show error if there was a problem initializing
+    if (error) {
+      return (
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', my: 8 }}>
+          <Typography variant="body1" color="error" sx={{ mb: 2 }}>
+            {error}
+          </Typography>
+          <Button 
+            variant="contained" 
+            color="primary"
+            onClick={() => window.location.reload()}
+          >
+            Refresh Page
+          </Button>
+        </Box>
+      );
+    }
+    
+    // Only show content when we're fully initialized
+    if (!initialized) {
+      return (
+        <Box sx={{ display: 'flex', justifyContent: 'center', my: 4 }}>
+          <CircularProgress />
+        </Box>
+      );
+    }
 
-                  return (
-                    <TableRow key={meeting.id || index}>
+    // Now we can render the actual content
+    switch (activeTab) {
+      case 0:
+        return renderProfile();
+      case 1:
+        return renderMeetingManagement();
+      case 2:
+        return renderManageQuestions();
+      case 3:
+        return renderAnalytics();
+      case 4:
+        return renderReports();
+      case 5:
+        return renderViewSchedule();
+      default:
+        return renderProfile();
+    }
+  };
+
+  // Render view schedule section
+  const renderViewSchedule = () => {
+    console.log('Rendering view schedule with meetings:', meetings);
+    
+    // Filter meetings based on selection
+    const filteredMeetings = Array.isArray(meetings) ? meetings.filter(meeting => {
+      if (meetingFilter === 'all') return true;
+      if (meetingFilter === 'student') {
+        return meeting.roleId === 1 || meeting.role?.toLowerCase() === 'student';
+      }
+      if (meetingFilter === 'staff') {
+        return meeting.roleId === 2 || meeting.role?.toLowerCase() === 'staff';
+      }
+      return true;
+    }) : [];
+    
+    console.log('Filtered meetings:', filteredMeetings.length);
+    
+    // If no meetings but we're initialized, check localStorage one more time
+    if (filteredMeetings.length === 0 && initialized) {
+      try {
+        const storedMeetings = localStorage.getItem('meetings');
+        if (storedMeetings) {
+          const parsedMeetings = JSON.parse(storedMeetings);
+          if (Array.isArray(parsedMeetings) && parsedMeetings.length > 0) {
+            console.log('Found meetings in localStorage:', parsedMeetings.length);
+            // Use setTimeout to avoid state update during render
+            setTimeout(() => {
+              sortAndSetMeetings(parsedMeetings);
+            }, 0);
+          }
+        }
+      } catch (e) {
+        console.error('Error checking localStorage for meetings:', e);
+      }
+    }
+    
+    return (
+      <Box sx={{ p: 3 }}>
+        <Paper sx={{ p: 3 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+            <Typography variant="h5" sx={{ fontWeight: 'bold' }}>
+              Meeting Schedule
+            </Typography>
+            
+            <Box sx={{ display: 'flex', gap: 2 }}>
+              <FormControl sx={{ minWidth: 150 }}>
+                <InputLabel id="meeting-filter-label">Filter By</InputLabel>
+                <Select
+                  labelId="meeting-filter-label"
+                  value={meetingFilter || 'all'}
+                  label="Filter By"
+                  onChange={(e) => setMeetingFilter(e.target.value)}
+                >
+                  <MenuItem value="all">All Meetings</MenuItem>
+                  <MenuItem value="student">Student Meetings</MenuItem>
+                  <MenuItem value="staff">Staff Meetings</MenuItem>
+                </Select>
+              </FormControl>
+              
+              <Button 
+                variant="outlined" 
+                color="primary"
+                onClick={() => fetchMeetings()}
+                startIcon={<RefreshIcon />}
+              >
+                Refresh
+              </Button>
+            </Box>
+          </Box>
+          
+          {filteredMeetings.length > 0 ? (
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Title</TableCell>
+                    <TableCell>Date</TableCell>
+                    <TableCell>Time</TableCell>
+                    <TableCell>Department</TableCell>
+                    <TableCell>Role</TableCell>
+                    <TableCell>Year</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {filteredMeetings.map((meeting) => (
+                    <TableRow key={meeting.id || `meeting-${Math.random()}`}>
                       <TableCell>{meeting.title}</TableCell>
-                      <TableCell>{formattedDate}</TableCell>
-                      <TableCell>{timeDisplay}</TableCell>
+                      <TableCell>{new Date(meeting.date || meeting.meetingDate).toLocaleDateString()}</TableCell>
+                      <TableCell>{`${meeting.startTime} - ${meeting.endTime}`}</TableCell>
+                      <TableCell>{meeting.department?.name || getDepartmentName(meeting.departmentId) || 'All'}</TableCell>
                       <TableCell>
                         <Chip 
-                          label={roleDisplay}
-                          color={roleDisplay.toLowerCase().trim() === 'student' ? 'primary' : 'secondary'}
-                          variant="outlined"
-                          size="small"
+                          label={meeting.roleId === 1 ? 'Student' : meeting.roleId === 2 ? 'Staff' : (meeting.role || 'All')}
+                          size="small" 
+                          sx={{ 
+                            bgcolor: meeting.roleId === 1 || meeting.role === 'student' ? '#e3f2fd' : 
+                                   meeting.roleId === 2 || meeting.role === 'staff' ? '#e8f5e9' : '#f5f5f7',
+                            color: meeting.roleId === 1 || meeting.role === 'student' ? '#0277bd' : 
+                                  meeting.roleId === 2 || meeting.role === 'staff' ? '#2e7d32' : '#616161',
+                            textTransform: 'capitalize'
+                          }} 
                         />
                       </TableCell>
-                      <TableCell>{departmentName}</TableCell>
-                      <TableCell>{yearDisplay}</TableCell>
+                      <TableCell>
+                        {(meeting.roleId === 1 || meeting.role?.toLowerCase() === 'student') 
+                          ? (meeting.year || '-') 
+                          : '-'}
+                      </TableCell>
                       <TableCell>
                         <Chip 
-                          label="Scheduled"
-                          color="warning"
-                          size="small"
+                          label={meeting.status || 'Scheduled'} 
+                          size="small" 
+                          sx={{ 
+                            bgcolor: 
+                              meeting.status === 'completed' ? '#e8f5e9' : 
+                              meeting.status === 'cancelled' ? '#ffebee' : 
+                              meeting.status === 'in-progress' ? '#fff3e0' : '#e3f2fd',
+                            color: 
+                              meeting.status === 'completed' ? '#2e7d32' : 
+                              meeting.status === 'cancelled' ? '#c62828' : 
+                              meeting.status === 'in-progress' ? '#ef6c00' : '#0277bd',
+                            textTransform: 'capitalize'
+                          }} 
                         />
+                      </TableCell>
+                      <TableCell>
+                        <IconButton 
+                          size="small" 
+                          color="primary" 
+                          onClick={() => handleEditMeeting(meeting)}
+                        >
+                          <EditIcon fontSize="small" />
+                        </IconButton>
+                        <IconButton 
+                          size="small" 
+                          color="error"
+                          onClick={() => handleDeleteMeeting(meeting.id)}
+                        >
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
                       </TableCell>
                     </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        )}
-      </Paper>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          ) : (
+            <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: 200, gap: 2 }}>
+              <Typography variant="body1" color="textSecondary">
+                No meetings found. Create a meeting to get started.
+              </Typography>
+              <Button 
+                variant="contained" 
+                color="primary" 
+                onClick={() => setActiveTab(1)}
+                startIcon={<AddIcon />}
+              >
+                Create New Meeting
+              </Button>
+            </Box>
+          )}
+        </Paper>
+      </Box>
     );
   };
 
@@ -1963,9 +1870,325 @@ const AcademicDirectorDashboard = () => {
     </Box>
   );
 
+  // Add debugging effect for activeTab changes
+  React.useEffect(() => {
+    console.log(`Active tab changed to: ${activeTab}`);
+  }, [activeTab]);
+
+  // Add fetchQuestions function
+  const fetchQuestions = async () => {
+    try {
+      setLoading(true);
+      const token = localStorage.getItem('token');
+      
+      if (!token) {
+        console.error('No token found for fetchQuestions');
+        return;
+      }
+      
+      console.log('Fetching questions for Academic Director dashboard');
+      
+      try {
+        // Try to fetch questions from the API with both header formats
+        const response = await fetch('http://localhost:8080/api/questions', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'x-access-token': token,
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if (!response.ok) {
+          throw new Error(`API request failed with status ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (Array.isArray(data)) {
+          console.log('Questions loaded successfully:', data.length);
+          setQuestions(data);
+        } else {
+          console.error('Invalid question data format:', data);
+          // Set default questions if needed
+          setQuestions([]);
+        }
+      } catch (apiError) {
+        console.error('Error fetching questions from API:', apiError);
+        // Try to load from localStorage as fallback
+        const storedQuestions = localStorage.getItem('questions');
+        if (storedQuestions) {
+          try {
+            const parsedQuestions = JSON.parse(storedQuestions);
+            if (Array.isArray(parsedQuestions)) {
+              setQuestions(parsedQuestions);
+              console.log('Loaded questions from localStorage:', parsedQuestions.length);
+            }
+          } catch (parseError) {
+            console.error('Error parsing stored questions:', parseError);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error in fetchQuestions:', error);
+      setError('Failed to load questions. Please try again later.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Function to save all meetings to the API
+  const handleSaveAllMeetings = async () => {
+    try {
+      setLoading(true);
+      
+      // Format meetings data to match API expectations
+      const formattedMeetings = meetings.map(meeting => {
+        // Create a fallback date if needed
+        const meetingDate = meeting.date || meeting.meetingDate || new Date().toISOString().split('T')[0];
+        const normalizedRole = typeof meeting.role === 'string' 
+          ? meeting.role.toLowerCase().trim() 
+          : meeting.role;
+        const isStudent = normalizedRole === 'student' || normalizedRole === 1;
+        
+        // Get year from the meeting object or default to 1 for students
+        const year = meeting.year || (isStudent ? 1 : null);
+        
+        return {
+          id: meeting.id,
+          title: meeting.title || `Meeting on ${meetingDate}`,
+          description: meeting.description || '',
+          meetingDate: meetingDate,
+          startTime: meeting.startTime || '09:00',
+          endTime: meeting.endTime || '10:00',
+          role: isStudent ? 1 : 2, // Convert to numeric role ID
+          departmentId: meeting.departmentId || meeting.department || 1,
+          year: isStudent ? year : null, // Include year for student meetings
+          status: meeting.status || 'scheduled'
+        };
+      });
+
+      // Try to submit to the API
+      try {
+        // Submit each meeting individually
+        for(const meeting of formattedMeetings) {
+          // If the meeting has an ID, update it, otherwise create it
+          if (meeting.id && !isNaN(parseInt(meeting.id))) {
+            await axios.put(`http://localhost:8080/api/meetings/${meeting.id}`, meeting, {
+              headers: {
+                'x-access-token': localStorage.getItem('token'),
+                'Content-Type': 'application/json'
+              }
+            });
+          } else {
+            await axios.post('http://localhost:8080/api/meetings', meeting, {
+              headers: {
+                'x-access-token': localStorage.getItem('token'),
+                'Content-Type': 'application/json'
+              }
+            });
+          }
+        }
+        
+        console.log('All meetings submitted successfully to API');
+        setSnackbar({
+          open: true,
+          message: 'All meetings saved successfully',
+          severity: 'success'
+        });
+      } catch (apiError) {
+        console.error('Error submitting meetings to API:', apiError);
+        setSnackbar({
+          open: true,
+          message: `Error: ${apiError.response?.data?.message || apiError.message || 'Failed to save meetings'}`,
+          severity: 'error'
+        });
+      }
+    } catch (error) {
+      console.error('Error in handleSaveAllMeetings:', error);
+      setSnackbar({
+        open: true,
+        message: `Error: ${error.message}`,
+        severity: 'error'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Add the missing renderManageQuestions function
+  const renderManageQuestions = () => {
+    return (
+      <Box sx={{ p: 3 }}>
+        <Paper sx={{ p: 3, mb: 3 }}>
+          <Typography variant="h5" sx={{ fontWeight: 'bold', mb: 3 }}>
+            Manage Questions
+          </Typography>
+          
+          <Grid container spacing={3}>
+            <Grid item xs={12}>
+              <FormControl fullWidth sx={{ mb: 2 }}>
+                <InputLabel>Target Role</InputLabel>
+                <Select
+                  value={targetRole}
+                  onChange={(e) => setTargetRole(e.target.value)}
+                  label="Target Role"
+                >
+                  <MenuItem value="student">Student</MenuItem>
+                  <MenuItem value="staff">Staff</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            
+            <Grid item xs={12} sm={6}>
+              <FormControl fullWidth sx={{ mb: 2 }}>
+                <InputLabel>Department</InputLabel>
+                <Select
+                  value={department}
+                  onChange={(e) => setDepartment(e.target.value)}
+                  label="Department"
+                >
+                  {departments.map((dept) => (
+                    <MenuItem key={dept.id} value={dept.id}>
+                      {dept.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+            
+            {targetRole === 'student' && (
+              <Grid item xs={12} sm={6}>
+                <FormControl fullWidth sx={{ mb: 2 }}>
+                  <InputLabel>Year</InputLabel>
+                  <Select
+                    value={year}
+                    onChange={(e) => setYear(e.target.value)}
+                    label="Year"
+                  >
+                    <MenuItem value="1">First Year</MenuItem>
+                    <MenuItem value="2">Second Year</MenuItem>
+                    <MenuItem value="3">Third Year</MenuItem>
+                    <MenuItem value="4">Fourth Year</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+            )}
+            
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Question"
+                value={newQuestion}
+                onChange={(e) => setNewQuestion(e.target.value)}
+                multiline
+                rows={3}
+                sx={{ mb: 2 }}
+              />
+              
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
+                {editQuestionId ? (
+                  <>
+                    <Button
+                      variant="outlined"
+                      onClick={() => {
+                        setNewQuestion('');
+                        setEditQuestionId(null);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="contained"
+                      onClick={handleUpdateQuestion}
+                      disabled={!newQuestion.trim()}
+                    >
+                      Update Question
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    variant="contained"
+                    onClick={handleAddQuestion}
+                    disabled={!newQuestion.trim() || !department}
+                  >
+                    Add Question
+                  </Button>
+                )}
+              </Box>
+            </Grid>
+          </Grid>
+        </Paper>
+        
+        <Paper sx={{ p: 3 }}>
+          <Typography variant="h6" sx={{ mb: 3 }}>
+            Questions List
+          </Typography>
+          
+          {questions.length === 0 ? (
+            <Typography align="center" color="textSecondary">
+              No questions added yet. Add questions above.
+            </Typography>
+          ) : (
+            <List>
+              {questions.map((question) => (
+                <ListItem
+                  key={question.id}
+                  secondaryAction={
+                    <Box>
+                      <IconButton edge="end" onClick={() => handleEditQuestion(question)}>
+                        <EditIcon />
+                      </IconButton>
+                      <IconButton edge="end" onClick={() => handleDeleteQuestion(question.id)}>
+                        <DeleteIcon />
+                      </IconButton>
+                    </Box>
+                  }
+                >
+                  <ListItemText
+                    primary={question.text}
+                    secondary={`${question.targetRole} - ${getDepartmentName(question.departmentId)}${question.year ? ` - Year ${question.year}` : ''}`}
+                  />
+                </ListItem>
+              ))}
+            </List>
+          )}
+          
+          {questions.length > 0 && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3 }}>
+              <Button
+                variant="contained"
+                color="primary"
+                onClick={handleSubmitQuestions}
+                disabled={questions.length === 0}
+              >
+                Submit Questions
+              </Button>
+            </Box>
+          )}
+        </Paper>
+      </Box>
+    );
+  };
+
+  // IMPORTANT: Change the return statement to show loading state
   return (
     <Box sx={{ display: 'flex' }}>
-        {/* Sidebar */}
+      {/* Debug info */}
+      <Box sx={{ 
+        position: 'fixed', 
+        top: 0, 
+        right: 0, 
+        bgcolor: 'rgba(0,0,0,0.7)', 
+        color: 'white', 
+        p: 1, 
+        zIndex: 9999,
+        fontSize: '10px'
+      }}>
+        Active Tab: {activeTab} | Initialized: {initialized ? 'Yes' : 'No'}
+      </Box>
+      
+      {/* Sidebar */}
       <Box 
         sx={{
           width: 240,
@@ -1989,7 +2212,10 @@ const AcademicDirectorDashboard = () => {
               <ListItem
               key={tab.id}
               button 
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => {
+                console.log(`Tab clicked: ${tab.id} - ${tab.label}`);
+                setActiveTab(tab.id);
+              }}
                 sx={{
                 py: 2, 
                 pl: 3,
@@ -2021,9 +2247,9 @@ const AcademicDirectorDashboard = () => {
             <ListItemText primary="Logout" sx={{ color: '#FFFFFF' }} />
           </ListItem>
         </Box>
-        </Box>
-        
-        {/* Main content */}
+      </Box>
+      
+      {/* Main content */}
       <Box 
         component="main" 
         sx={{ 
@@ -2033,295 +2259,46 @@ const AcademicDirectorDashboard = () => {
           ml: '240px',
           minHeight: '100vh',
           display: 'flex',
-          justifyContent: 'center'
+          flexDirection: 'column',
+          justifyContent: 'center',
+          alignItems: 'center'
         }}
       >
-        <Box sx={{ width: '1010px', mt: 2, mb: 2 }}>
-          {/* Profile Tab */}
-          {activeTab === 0 && (
-            renderProfile()
-          )}
-          
-          {/* Manage Meetings Tab */}
-          {activeTab === 1 && (
-            <Paper sx={{ p: 4, borderRadius: 0 }}>
-              <Typography variant="h5" sx={{ fontWeight: 'bold', mb: 4 }}>Manage Meetings</Typography>
-              {renderMeetingManagement()}
-            </Paper>
-          )}
-          
-          {/* Manage Questions Tab */}
-          {activeTab === 2 && (
-            <Paper sx={{ p: 4, borderRadius: 0 }}>
-              <Typography variant="h5" sx={{ fontWeight: 'bold', mb: 4 }}>Manage Feedback Questions</Typography>
-              
-              <Grid container spacing={3}>
-                <Grid item xs={12} sm={6}>
-                  <FormControl fullWidth variant="outlined" sx={{ mb: 2 }}>
-                    <InputLabel>Target Role</InputLabel>
-                    <Select
-                      value={targetRole}
-                      onChange={(e) => setTargetRole(e.target.value)}
-                      label="Target Role"
-                    >
-                      <MenuItem value="student">Student</MenuItem>
-                      <MenuItem value="staff">Staff</MenuItem>
-                    </Select>
-                  </FormControl>
-                </Grid>
-                
-                <Grid item xs={12} sm={6}>
-                  <FormControl fullWidth variant="outlined" sx={{ mb: 2 }}>
-                    <InputLabel>Department</InputLabel>
-                    <Select
-                      value={department}
-                      onChange={(e) => setDepartment(e.target.value)}
-                      label="Department"
-                    >
-                      <MenuItem value="Computer Science">Computer Science</MenuItem>
-                      <MenuItem value="Information Technology">Information Technology</MenuItem>
-                    </Select>
-                  </FormControl>
-                </Grid>
-                
-                <Grid item xs={12} sm={6}>
-                  <FormControl fullWidth variant="outlined" sx={{ mb: 2 }}>
-                    <InputLabel>Meeting Date</InputLabel>
-                    <Select
-                      value={meetingDate}
-                      onChange={(e) => setMeetingDate(e.target.value)}
-                      label="Meeting Date"
-                    >
-                      <MenuItem value="">
-                        <em>None (General Question)</em>
-                      </MenuItem>
-                      {meetings.filter(m => m.role === targetRole).map((meeting) => (
-                        <MenuItem key={meeting.id} value={meeting.date}>
-                          {`${meeting.date} - ${meeting.title}`}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </Grid>
-                
-                {targetRole === 'student' && (
-                  <Grid item xs={12} sm={6}>
-                    <FormControl fullWidth variant="outlined" sx={{ mb: 2 }}>
-                      <InputLabel>Year</InputLabel>
-                      <Select
-                        value={year}
-                        onChange={(e) => setYear(e.target.value)}
-                        label="Year"
-                      >
-                        <MenuItem value="1">Year 1</MenuItem>
-                        <MenuItem value="2">Year 2</MenuItem>
-                        <MenuItem value="3">Year 3</MenuItem>
-                        <MenuItem value="4">Year 4</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                )}
-                
-                {targetRole === 'staff' && (
-                  <Grid item xs={12} sm={6}>
-                    <FormControl fullWidth variant="outlined" sx={{ mb: 2 }}>
-                      <InputLabel>Staff Member</InputLabel>
-                      <Select
-                        value={staff}
-                        onChange={(e) => setStaff(e.target.value)}
-                        label="Staff Member"
-                      >
-                        <MenuItem value="Staff 1">Staff 1</MenuItem>
-                        <MenuItem value="Staff 2">Staff 2</MenuItem>
-                        <MenuItem value="Staff 3">Staff 3</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                )}
-
-                <Grid item xs={12}>
-                <TextField
-                  fullWidth
-                    variant="outlined"
-                    label="Add Question"
-                  value={newQuestion}
-                  onChange={(e) => setNewQuestion(e.target.value)}
-                  sx={{ mb: 2 }}
-                />
-                  
-                  <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-                    {editQuestionId ? (
-                <Button
-                  variant="contained"
-                        startIcon={<EditIcon />}
-                        onClick={handleUpdateQuestion}
-                        sx={{ 
-                          bgcolor: '#1A2137', 
-                          '&:hover': { bgcolor: '#2A3147' }
-                        }}
-                      >
-                        Update Question
-                </Button>
-                    ) : (
-                <Button
-                  variant="contained"
-                        onClick={handleAddQuestion}
-                        sx={{ 
-                          bgcolor: '#1A2137', 
-                          '&:hover': { bgcolor: '#2A3147' }
-                        }}
-                      >
-                        Add Question
-                </Button>
-                    )}
-              </Box>
-                </Grid>
-              </Grid>
-              
-              <Divider sx={{ my: 3 }} />
-              
-              <Typography variant="h6" sx={{ mb: 2 }}>Current Questions</Typography>
-              
-              {questions.length > 0 ? (
-                <List>
-                {questions.map((q) => (
-                    <ListItem key={q.id} sx={{ bgcolor: '#f8f9fa', mb: 1, borderRadius: 0 }}>
-                      <Box sx={{ flexGrow: 1 }}>
-                        <Typography variant="body1">{q.question}</Typography>
-                      </Box>
-                      <IconButton 
-                        onClick={() => handleEditQuestion(q)}
-                        sx={{ color: '#1A2137' }}
-                      >
-                          <EditIcon />
-                        </IconButton>
-                      <IconButton 
-                        onClick={() => handleDeleteQuestion(q.id)}
-                        sx={{ color: '#1A2137' }}
-                      >
-                          <DeleteIcon />
-                        </IconButton>
-                  </ListItem>
-                ))}
-              </List>
-              ) : (
-                <Typography variant="body2" sx={{ color: 'text.secondary', textAlign: 'center', py: 2 }}>
-                  No questions added yet.
-                </Typography>
-              )}
-
-              {/* List of added questions */}
-              {questions.length > 0 && (
-                <Box sx={{ mt: 4 }}>
-                  <Typography variant="h6" gutterBottom>Added Questions</Typography>
-                  
-                  <Paper sx={{ p: 2, bgcolor: '#f8f9fa' }}>
-                    {questions.map((q, index) => (
-                      <Box 
-                    key={q.id}
-                        sx={{ 
-                          display: 'flex', 
-                          alignItems: 'center', 
-                          justifyContent: 'space-between',
-                          py: 1,
-                          px: 2,
-                          borderBottom: index < questions.length - 1 ? '1px solid #eee' : 'none'
-                        }}
-                      >
-                        <Box sx={{ flex: 1 }}>
-                          <Typography variant="body1">{q.text}</Typography>
-                          <Box sx={{ display: 'flex', gap: 2, mt: 0.5 }}>
-                            <Typography variant="caption" sx={{ color: '#1A2137', bgcolor: '#e3f2fd', px: 1, py: 0.5, borderRadius: 1 }}>
-                              {q.targetRole === 'student' ? 'Student' : 'Staff'}
-                            </Typography>
-                            <Typography variant="caption" sx={{ color: '#00695c', bgcolor: '#e0f2f1', px: 1, py: 0.5, borderRadius: 1 }}>
-                              {q.departmentId}
-                            </Typography>
-                            {q.targetRole === 'student' && (
-                              <Typography variant="caption" sx={{ color: '#ff6d00', bgcolor: '#fff3e0', px: 1, py: 0.5, borderRadius: 1 }}>
-                                Year {q.year}
-                              </Typography>
-                            )}
-                            {q.meetingDate && (
-                              <Typography variant="caption" sx={{ color: '#6a1b9a', bgcolor: '#f3e5f5', px: 1, py: 0.5, borderRadius: 1 }}>
-                                Meeting: {q.meetingDate}
-                              </Typography>
-                            )}
-                          </Box>
-                        </Box>
-                      <Box>
-                          <IconButton 
-                            onClick={() => handleEditQuestion(q)}
-                            sx={{ color: '#1A2137' }}
-                          >
-                          <EditIcon />
-                        </IconButton>
-                          <IconButton 
-                            onClick={() => handleDeleteQuestion(q.id)}
-                            sx={{ color: '#d32f2f' }}
-                          >
-                          <DeleteIcon />
-                        </IconButton>
-                      </Box>
-                      </Box>
-                    ))}
-                  </Paper>
-                  
-                  <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
-              <Button
-                variant="contained"
-                      startIcon={<SendIcon />}
-                      onClick={handleSubmitQuestions}
-                      sx={{ 
-                        bgcolor: '#1A2137', 
-                        '&:hover': { bgcolor: '#2A3147' }
-                      }}
-                    >
-                      Submit Questions
-              </Button>
-                  </Box>
-                </Box>
-              )}
-            </Paper>
-          )}
-
-          {/* View Reports Tab */}
-          {activeTab === 4 && (
-            <Paper sx={{ p: 4, borderRadius: 0 }}>
-              <Typography variant="h5" sx={{ fontWeight: 'bold', mb: 4 }}>View Reports</Typography>
-              
-              <Grid container spacing={3}>
-                <Grid item xs={12}>
-                  <Card sx={{ borderRadius: 0, bgcolor: '#f8f9fa' }}>
-                    <CardContent>
-                      <Typography variant="h6">Feedback Reports</Typography>
-                      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                        Download complete feedback reports
-              </Typography>
-                  <Button
-                    variant="contained"
-                    startIcon={<DownloadIcon />}
-                    onClick={handleDownloadReport}
-                        sx={{ 
-                          bgcolor: '#1A2137', 
-                          '&:hover': { bgcolor: '#2A3147' }
-                        }}
-                  >
-                        Download Report
-                  </Button>
-                    </CardContent>
-                  </Card>
-                </Grid>
-              </Grid>
-            </Paper>
-          )}
-          
-          {/* View Meeting Schedule Tab */}
-          {activeTab === 5 && renderViewMeetingSchedule()}
-          
-          {/* Analytics Tab */}
-          {activeTab === 3 && renderAnalytics()}
-        </Box>
+        {loading && (
+          <Box sx={{ width: '100%' }}>
+            <LinearProgress />
+          </Box>
+        )}
+        
+        {error && (
+          <Paper sx={{ p: 3, m: 2, maxWidth: '600px' }}>
+            <Typography variant="h6" color="error" gutterBottom>
+              Error
+            </Typography>
+            <Typography>{error}</Typography>
+            <Button 
+              variant="contained" 
+              sx={{ mt: 2 }} 
+              onClick={() => window.location.reload()}
+            >
+              Refresh Page
+            </Button>
+          </Paper>
+        )}
+        
+        {!loading && !error && initialized && (
+          <Box sx={{ width: '1010px', mt: 2, mb: 2 }}>
+            {renderContent()}
+          </Box>
+        )}
+        
+        {!loading && !error && !initialized && (
+          <Box sx={{ textAlign: 'center', p: 4 }}>
+            <Typography variant="h6">
+              Initializing dashboard...
+            </Typography>
+          </Box>
+        )}
       </Box>
       
       <Snackbar

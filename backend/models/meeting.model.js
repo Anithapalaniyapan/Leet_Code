@@ -33,22 +33,31 @@ module.exports = (sequelize, Sequelize) => {
       type: Sequelize.ENUM('scheduled', 'in-progress', 'completed', 'cancelled'),
       defaultValue: 'scheduled'
     },
-    isActive: {
-      type: Sequelize.BOOLEAN,
-      defaultValue: true,
-      allowNull: false
-    },
     departmentId: {
       type: Sequelize.INTEGER,
-      allowNull: true
+      allowNull: false,
+      references: {
+        model: 'departments',
+        key: 'id'
+      }
+    },
+    roleId: {
+      type: Sequelize.INTEGER,
+      allowNull: true,
+      comment: 'References the role ID from the roles table (e.g., student or staff)'
     },
     year: {
       type: Sequelize.INTEGER,
-      allowNull: true
+      allowNull: true,
+      comment: 'Academic year, required for student meetings'
     },
     createdBy: {
       type: Sequelize.INTEGER,
-      allowNull: false
+      allowNull: false,
+      references: {
+        model: 'users',
+        key: 'id'
+      }
     }
   });
 

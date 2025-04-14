@@ -125,75 +125,89 @@ const ExecutiveDirectorDashboard = () => {
     
     console.log('Authentication successful for Executive Director dashboard');
     
-    // Load meetings or other necessary data
-    const fetchMeetings = async () => {
-      setLoading(true);
-      try {
-        const token = localStorage.getItem('token');
-        if (!token) {
-          throw new Error('No authentication token found');
-        }
+    // Load meetings immediately on component mount
+    fetchMeetings();
+    
+  }, [navigate]);
 
-        // Try to fetch from API first
-        try {
-          const response = await axios.get('http://localhost:8080/api/meetings', {
-            headers: {
-              'Authorization': `Bearer ${token}`,
-              'Content-Type': 'application/json'
-            }
+  // Separate fetchMeetings function
+  const fetchMeetings = async () => {
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('No authentication token found');
+      }
+
+      console.log('Fetching meetings for Executive Director dashboard');
+      
+      try {
+        // Use the standard /meetings endpoint to get all meetings
+        const response = await axios.get('http://localhost:8080/api/meetings', {
+          headers: {
+            'x-access-token': token,
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if (response.data && Array.isArray(response.data)) {
+          console.log(`Received ${response.data.length} meetings from API`);
+          
+          // Executive Director should see ALL meetings regardless of role/department/year
+          const sortedMeetings = response.data.sort((a, b) => {
+            const dateA = new Date(a.meetingDate || a.date || '');
+            const dateB = new Date(b.meetingDate || b.date || '');
+            return dateA - dateB;
           });
           
-          if (response.data && Array.isArray(response.data)) {
-            // Sort meetings by date
-            const sortedMeetings = response.data.sort((a, b) => {
-              const dateA = new Date(a.date || a.meetingDate || '');
-              const dateB = new Date(b.date || b.meetingDate || '');
-              return dateA - dateB;
-            });
-            
-            // Store the meetings in localStorage for offline access
-            localStorage.setItem('meetings', JSON.stringify(sortedMeetings));
-            setMeetings(sortedMeetings);
-          }
-        } catch (apiError) {
-          console.error('API fetch failed, trying localStorage:', apiError);
-          
-          // If API fails with 401, clear token and redirect to login
-          if (apiError.response?.status === 401) {
-            localStorage.removeItem('token');
-            setSnackbar({
-              open: true,
-              message: 'Session expired. Please log in again.',
-              severity: 'error'
-            });
-            navigate('/login');
-            return;
-          }
-          
-          // If API fails for other reasons, try to load from localStorage
-          const storedMeetings = localStorage.getItem('meetings');
-          if (storedMeetings) {
+          // Store meetings in localStorage for offline access
+          localStorage.setItem('allMeetings', JSON.stringify(sortedMeetings));
+          setMeetings(sortedMeetings);
+          console.log('Meetings set in state:', sortedMeetings.length);
+        } else {
+          console.error('Invalid meeting data format:', response.data);
+        }
+      } catch (apiError) {
+        console.error('API fetch failed, trying localStorage:', apiError);
+        
+        // If API fails with 401, clear token and redirect to login
+        if (apiError.response?.status === 401) {
+          localStorage.removeItem('token');
+          setSnackbar({
+            open: true,
+            message: 'Session expired. Please log in again.',
+            severity: 'error'
+          });
+          navigate('/login');
+          return;
+        }
+        
+        // If API fails for other reasons, try to load from localStorage
+        const storedMeetings = localStorage.getItem('allMeetings');
+        if (storedMeetings) {
+          try {
             const parsedMeetings = JSON.parse(storedMeetings);
             if (Array.isArray(parsedMeetings)) {
+              console.log('Loaded meetings from localStorage:', parsedMeetings.length);
               setMeetings(parsedMeetings);
             }
+          } catch (parseError) {
+            console.error('Error parsing stored meetings:', parseError);
           }
         }
-      } catch (error) {
-        console.error('Error in fetchMeetings:', error);
-        setError(error.message);
-        setSnackbar({
-          open: true,
-          message: error.message || 'Failed to load meetings. Please try again later.',
-          severity: 'error'
-        });
-      } finally {
-        setLoading(false);
       }
-    };
-
-    fetchMeetings();
-  }, [navigate]);
+    } catch (error) {
+      console.error('Error in fetchMeetings:', error);
+      setError(error.message);
+      setSnackbar({
+        open: true,
+        message: error.message || 'Failed to load meetings. Please try again later.',
+        severity: 'error'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Add a function to fetch user profile
   useEffect(() => {
@@ -558,12 +572,15 @@ const ExecutiveDirectorDashboard = () => {
   const renderMeetingCard = (meeting) => {
     const dateValue = meeting.date || meeting.meetingDate;
     const formattedDate = dateValue ? new Date(dateValue).toLocaleDateString() : '';
-    const roleDisplay = meeting.role || 'Not specified';
+    // Map roleId to readable role name
+    const roleDisplay = meeting.roleId 
+      ? (meeting.roleId === 1 ? 'Student' : meeting.roleId === 2 ? 'Staff' : 'Not specified')
+      : (meeting.role || 'Not specified');
     const timeDisplay = meeting.startTime && meeting.endTime
       ? `${meeting.startTime} - ${meeting.endTime}`
       : '';
     const departmentName = getDepartmentName(meeting.department || meeting.departmentId);
-    const yearDisplay = roleDisplay.toLowerCase().trim() === 'student' ? (meeting.year || '-') : '-';
+    const yearDisplay = (roleDisplay.toLowerCase().trim() === 'student' || meeting.roleId === 1) ? (meeting.year || '-') : '-';
 
     return (
       <Card key={meeting.id} sx={{ mb: 2, borderRadius: 1 }}>

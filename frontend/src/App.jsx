@@ -10,6 +10,7 @@ import StudentDashboard from './components/dashboards/StudentDashboard'
 import StaffDashboard from './components/dashboards/StaffDashboard'
 import AcademicDirectorDashboard from './components/dashboards/AcademicDirectorDashboard'
 import ExecutiveDirectorDashboard from './components/dashboards/ExecutiveDirectorDashboard'
+import CreateMeetingForm from './components/meeting/CreateMeetingForm'
 import { syncAuthState } from './redux/slices/authSlice'
 
 const App = () => {

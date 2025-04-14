@@ -18,7 +18,15 @@ import {
   Alert,
   Card,
   CardContent,
-  Container
+  Container,
+  TableContainer,
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableCell,
+  Chip,
+  CircularProgress
 } from '@mui/material';
 import PersonIcon from '@mui/icons-material/Person';
 import FeedbackIcon from '@mui/icons-material/Feedback';
@@ -100,9 +108,14 @@ const StaffDashboard = () => {
         // Make sure the userRole is stored in localStorage for meeting filtering
         localStorage.setItem('userRole', 'staff');
         
-        // Load meetings
-        await loadMeetingsFromStorage();
-        await dispatch(fetchMeetings());
+        // Try direct API call first 
+        const fetchedDirectly = await fetchMeetingsDirectly();
+        
+        // If direct call fails, try Redux action
+        if (!fetchedDirectly) {
+          console.log('Staff Dashboard: Direct API call failed, trying Redux action');
+          await dispatch(fetchMeetings()).unwrap();
+        }
         
         // Debug localStorage for meetings
         const storedMeetings = localStorage.getItem('meetings');
@@ -126,6 +139,7 @@ const StaffDashboard = () => {
         console.error('Error initializing staff dashboard:', error);
         // If Redux fails, try direct API call
         await fetchUserProfileDirectly();
+        await fetchMeetingsDirectly();
       }
     };
 
@@ -260,207 +274,161 @@ const StaffDashboard = () => {
     dispatch(hideSnackbar());
   };
 
-  // Add dedicated function to load meetings from localStorage
-  const loadMeetingsFromStorage = () => {
+  // Add a direct API call function to fetch meetings
+  const fetchMeetingsDirectly = async () => {
     try {
-      // Try both possible localStorage keys for meetings
-      const storedMeetings = localStorage.getItem('submittedMeetings') || localStorage.getItem('meetings');
-      
-      if (!storedMeetings) {
-        console.log('No meetings found in localStorage');
-        return false;
+      console.log('Staff Dashboard: Fetching meetings directly from API');
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('No authentication token found for meeting fetch');
       }
       
-      const parsedMeetings = JSON.parse(storedMeetings);
-      
-      if (!Array.isArray(parsedMeetings) || parsedMeetings.length === 0) {
-        console.log('No valid meetings found in localStorage');
-        return false;
-      }
-      
-      console.log('Found', parsedMeetings.length, 'meetings in localStorage');
-      
-      // Filter staff meetings
-      const staffMeetings = parsedMeetings.filter(meeting => {
-        // Check if role exists and is 'staff' (case-insensitive)
-        const role = (meeting.role || '').toLowerCase();
-        return role === 'staff' || role.includes('staff');
+      // Make direct API call to the user-specific endpoint
+      const response = await fetch('http://localhost:8080/api/meetings/user/current', {
+        method: 'GET',
+        headers: {
+          'x-access-token': token,
+          'Content-Type': 'application/json'
+        }
       });
       
-      console.log('Filtered', staffMeetings.length, 'staff meetings from', parsedMeetings.length, 'total meetings');
+      if (!response.ok) {
+        throw new Error(`API request failed with status ${response.status}`);
+      }
       
-      if (staffMeetings.length > 0) {
-        // Sort and categorize meetings
-        const now = new Date();
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const meetingsData = await response.json();
+      console.log('Staff Dashboard: Raw meetings data from API:', meetingsData);
+      
+      // Process the response based on its structure
+      if (meetingsData) {
+        console.log('Staff Dashboard: Successfully fetched meetings from API');
         
-        const currentMeetings = [];
-        const pastMeetings = [];
-        const futureMeetings = [];
+        let pastMeetings = [];
+        let currentMeetings = [];
+        let futureMeetings = [];
+        let allMeetings = [];
         
-        staffMeetings.forEach(meeting => {
-          const meetingDate = new Date(meeting.date || meeting.meetingDate);
-          meetingDate.setHours(0, 0, 0, 0);
+        // Check if the API returns categorized meetings or a flat array
+        if (Array.isArray(meetingsData)) {
+          console.log('Staff Dashboard: API returned an array of meetings, categorizing them');
+          allMeetings = meetingsData;
           
-          if (meetingDate.getTime() === today.getTime()) {
-            currentMeetings.push(meeting);
-          } else if (meetingDate < today) {
-            pastMeetings.push(meeting);
-          } else {
-            futureMeetings.push(meeting);
-          }
-        });
+          // Categorize meetings manually
+          const now = new Date();
+          const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          
+          meetingsData.forEach(meeting => {
+            const meetingDate = new Date(meeting.meetingDate || meeting.date);
+            const meetingDateOnly = new Date(meetingDate.getFullYear(), meetingDate.getMonth(), meetingDate.getDate());
+            
+            if (meetingDateOnly < today) {
+              pastMeetings.push(meeting);
+            } else if (meetingDateOnly.getTime() === today.getTime()) {
+              currentMeetings.push(meeting);
+            } else {
+              futureMeetings.push(meeting);
+            }
+          });
+        } else if (typeof meetingsData === 'object') {
+          // API returned an object with categories
+          console.log('Staff Dashboard: API returned categorized meetings');
+          pastMeetings = meetingsData.pastMeetings || [];
+          currentMeetings = meetingsData.currentMeetings || [];
+          futureMeetings = meetingsData.futureMeetings || [];
+          allMeetings = [
+            ...pastMeetings,
+            ...currentMeetings,
+            ...futureMeetings
+          ];
+        }
         
-        // Update Redux store
+        console.log(`Staff Dashboard: Processed ${allMeetings.length} total meetings`,
+                   `(${pastMeetings.length} past, ${currentMeetings.length} current, ${futureMeetings.length} future)`);
+        
+        // Update Redux state with categorized meetings
         dispatch({
           type: 'meetings/setMeetings',
           payload: {
-            pastMeetings,
-            currentMeetings,
-            futureMeetings
+            pastMeetings: pastMeetings,
+            currentMeetings: currentMeetings,
+            futureMeetings: futureMeetings
           }
         });
         
-        // Also update timer if we have an upcoming meeting
-        if (futureMeetings.length > 0) {
-          // Sort future meetings by date
-          const sortedMeetings = [...futureMeetings].sort((a, b) => {
-            const dateA = new Date(a.date || a.meetingDate || '');
-            const dateB = new Date(b.date || b.meetingDate || '');
-            return dateA - dateB;
-          });
-          
-          const nextMeeting = sortedMeetings[0];
-          const meetingDate = new Date(`${nextMeeting.date || nextMeeting.meetingDate}T${nextMeeting.startTime || '00:00'}`);
-          
-          if (!isNaN(meetingDate.getTime())) {
-            const diffMs = Math.max(0, meetingDate - now);
-            const diffMins = Math.floor(diffMs / 60000);
-            const diffSecs = Math.floor((diffMs % 60000) / 1000);
-            
-            const timerData = {
-              id: nextMeeting.id,
-              title: nextMeeting.title,
-              date: meetingDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
-              time: nextMeeting.startTime,
-              minutesLeft: diffMins,
-              secondsLeft: diffSecs,
-              originalDate: nextMeeting.date || nextMeeting.meetingDate,
-              role: 'staff'
-            };
-            
-            // Update staff timer data
-            localStorage.setItem('staffNextMeetingData', JSON.stringify(timerData));
-          }
-        }
-        
-        dispatch(showSnackbar({
-          message: `Loaded ${staffMeetings.length} staff meetings`,
-          severity: 'success'
-        }));
+        // Also store in localStorage for persistence across refreshes
+        localStorage.setItem('staffMeetings', JSON.stringify(allMeetings));
+        console.log('Staff Dashboard: Saved meetings to localStorage');
         
         return true;
+      } else {
+        console.error('Staff Dashboard: Invalid meetings data format:', meetingsData);
+        return false;
+      }
+    } catch (error) {
+      console.error('Staff Dashboard: Error fetching meetings from API:', error);
+      
+      // Try loading from localStorage as a last resort
+      try {
+        const storedMeetings = localStorage.getItem('staffMeetings');
+        if (storedMeetings) {
+          const parsedMeetings = JSON.parse(storedMeetings);
+          if (Array.isArray(parsedMeetings)) {
+            console.log('Staff Dashboard: Loading meetings from localStorage:', parsedMeetings.length);
+            
+            // Categorize meetings
+            const now = new Date();
+            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            
+            const pastMeetings = [];
+            const currentMeetings = [];
+            const futureMeetings = [];
+            
+            parsedMeetings.forEach(meeting => {
+              const meetingDate = new Date(meeting.meetingDate || meeting.date);
+              const meetingDateOnly = new Date(meetingDate.getFullYear(), meetingDate.getMonth(), meetingDate.getDate());
+              
+              if (meetingDateOnly < today) {
+                pastMeetings.push(meeting);
+              } else if (meetingDateOnly.getTime() === today.getTime()) {
+                currentMeetings.push(meeting);
+              } else {
+                futureMeetings.push(meeting);
+              }
+            });
+            
+            // Update Redux state
+            dispatch({
+              type: 'meetings/setMeetings',
+              payload: {
+                pastMeetings: pastMeetings,
+                currentMeetings: currentMeetings,
+                futureMeetings: futureMeetings
+              }
+            });
+            
+            return true;
+          }
+        }
+      } catch (localStorageError) {
+        console.error('Staff Dashboard: Error loading meetings from localStorage:', localStorageError);
       }
       
-      console.log('No staff meetings found in localStorage');
-      return false;
-    } catch (error) {
-      console.error('Error loading meetings from localStorage:', error);
-      return false;
-    }
-  };
-
-  // Add sortAndSetMeetings function
-  const sortAndSetMeetings = (meetings) => {
-    if (!Array.isArray(meetings)) {
-      console.error('Invalid meetings data received:', meetings);
-      return;
-    }
-
-    // Sort meetings by date
-    const sortedMeetings = meetings.sort((a, b) => {
-      const dateA = new Date(a.date || a.meetingDate || '');
-      const dateB = new Date(b.date || b.meetingDate || '');
-      return dateA - dateB;
-    });
-
-    // Update state with sorted meetings
-    dispatch({
-      type: 'meetings/setMeetings',
-      payload: {
-        pastMeetings: sortedMeetings.filter(m => {
-          const meetingDate = new Date(m.date || m.meetingDate || '');
-          return meetingDate < new Date();
-        }),
-        currentMeetings: sortedMeetings.filter(m => {
-          const meetingDate = new Date(m.date || m.meetingDate || '');
-          const today = new Date();
-          return meetingDate.toDateString() === today.toDateString();
-        }),
-        futureMeetings: sortedMeetings.filter(m => {
-          const meetingDate = new Date(m.date || m.meetingDate || '');
-          return meetingDate > new Date();
-        })
-      }
-    });
-
-    // Store in localStorage
-    try {
-      localStorage.setItem('meetings', JSON.stringify(sortedMeetings));
-      localStorage.setItem('submittedMeetings', JSON.stringify(sortedMeetings));
-    } catch (error) {
-      console.error('Error storing meetings in localStorage:', error);
-    }
-  };
-
-  // Update fetchMeetings function
-  const fetchMeetings = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      if (!token) {
-        console.error('No token found');
-        return;
-      }
-
-      // Get staff's department from profile
-      const userProfile = JSON.parse(localStorage.getItem('userData'));
-      const staffDepartment = userProfile?.department;
-
-      // First try to load from localStorage
-      const storedMeetings = localStorage.getItem('meetings');
-      if (storedMeetings) {
-        try {
-          const parsedMeetings = JSON.parse(storedMeetings);
-          if (Array.isArray(parsedMeetings) && parsedMeetings.length > 0) {
-            // Filter meetings based on staff's department
-            const filteredMeetings = parsedMeetings.filter(meeting => 
-              meeting.role?.toLowerCase() === 'staff' &&
-              meeting.department === staffDepartment
-            );
-            sortAndSetMeetings(filteredMeetings);
-            return;
-          }
-        } catch (error) {
-          console.error('Error parsing stored meetings:', error);
+      // If all else fails, return empty meetings
+      dispatch({
+        type: 'meetings/setMeetings',
+        payload: {
+          pastMeetings: [],
+          currentMeetings: [],
+          futureMeetings: []
         }
-      }
-
-      // If no valid meetings in localStorage, fetch from API
-      const response = await API.get('/meetings');
-      if (response.data && Array.isArray(response.data)) {
-        // Filter meetings based on staff's department
-        const filteredMeetings = response.data.filter(meeting => 
-          meeting.role?.toLowerCase() === 'staff' &&
-          meeting.department === staffDepartment
-        );
-        sortAndSetMeetings(filteredMeetings);
-      }
-    } catch (error) {
-      console.error('Error fetching meetings from API:', error);
+      });
+      
       dispatch(showSnackbar({
-        message: 'Error loading meetings. Please try again.',
+        message: 'Could not load meetings. Please try again later.',
         severity: 'error'
       }));
+      
+      return false;
     }
   };
 
@@ -573,87 +541,144 @@ const StaffDashboard = () => {
 
   // Render meeting schedule section
   const renderViewMeetingSchedule = () => {
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    // Extract meetings from different sources in state to ensure we catch all meetings
+    const allMeetings = [
+      ...(meetings.pastMeetings || []),
+      ...(meetings.currentMeetings || []),
+      ...(meetings.futureMeetings || []),
+      // Also try the nested meetings structure
+      ...((meetings.meetings?.pastMeetings || [])),
+      ...((meetings.meetings?.currentMeetings || [])), 
+      ...((meetings.meetings?.futureMeetings || []))
+    ];
     
-    // Filter meetings to show only present and upcoming ones
-    const filteredMeetings = meetings.filter(meeting => {
-      const meetingDate = new Date(meeting.date || meeting.meetingDate);
-      return meetingDate >= today;
-    }).sort((a, b) => new Date(a.date || a.meetingDate) - new Date(b.date || b.meetingDate));
+    // Remove duplicates if any (by id)
+    const uniqueMeetings = allMeetings.filter((meeting, index, self) =>
+      index === self.findIndex((m) => m.id === meeting.id)
+    );
+    
+    console.log('Staff Dashboard - renderViewMeetingSchedule: Current meetings state:', meetings);
+    console.log('Staff Dashboard - renderViewMeetingSchedule: Combined allMeetings:', uniqueMeetings);
 
     return (
-      <Box sx={{ p: 3 }}>
-        <Typography variant="h5" gutterBottom>
+      <Paper sx={{ p: 4, borderRadius: 0 }}>
+        <Typography variant="h5" sx={{ fontWeight: 'bold', mb: 4 }}>
           View Meeting Schedule
         </Typography>
         
-        {filteredMeetings.length === 0 ? (
-          <Typography variant="body1" sx={{ textAlign: 'center', color: 'text.secondary', py: 4 }}>
-            No meetings scheduled.
-          </Typography>
+        {meetings.loading ? (
+          <Box sx={{ display: 'flex', justifyContent: 'center', my: 4 }}>
+            <CircularProgress />
+          </Box>
         ) : (
-          <Grid container spacing={3}>
-            {filteredMeetings.map((meeting) => {
-              const meetingDate = new Date(meeting.date || meeting.meetingDate);
-              const isToday = meetingDate.toDateString() === today.toDateString();
+          <>
+            {uniqueMeetings && uniqueMeetings.length > 0 ? (
+              <TableContainer>
+                <Table sx={{ minWidth: 650 }}>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Title</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Date</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Time</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Department</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Status</TableCell>
+                      <TableCell sx={{ fontWeight: 'bold' }}>Actions</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {uniqueMeetings.map((meeting) => {
+                      console.log('Staff Dashboard - renderViewMeetingSchedule: Rendering meeting:', meeting);
+                      // Normalize meeting data
+                      const meetingDate = meeting.meetingDate || meeting.date;
+                      const formattedDate = meetingDate 
+                        ? new Date(meetingDate).toLocaleDateString() 
+                        : 'Not specified';
+                      
+                      // Get department name
+                      const departmentName = meeting.department?.name || 
+                        (typeof meeting.department === 'string' ? meeting.department : null) ||
+                        getDepartmentNameById(meeting.departmentId) || 
+                        'Not specified';
               
-              return (
-                <Grid item xs={12} key={meeting.id}>
-                  <Card sx={{ borderRadius: 0, mb: 2 }}>
-                    <CardContent>
-                      <Typography variant="h6" sx={{ fontWeight: 'bold', mb: 1 }}>
-                        {meeting.title}
-                      </Typography>
-                      
-                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, mb: 2 }}>
-                        <Typography variant="body2" sx={{ 
-                          color: 'primary.main',
-                          bgcolor: '#e3f2fd',
-                          px: 1.5,
-                          py: 0.5,
-                          borderRadius: 1
-                        }}>
-                          {`Date: ${meetingDate.toLocaleDateString()}`}
-                        </Typography>
-                        
-                        <Typography variant="body2" sx={{ 
-                          color: 'success.main',
-                          bgcolor: '#e8f5e9',
-                          px: 1.5,
-                          py: 0.5,
-                          borderRadius: 1
-                        }}>
-                          {`Time: ${meeting.startTime} - ${meeting.endTime}`}
-                        </Typography>
-                        
-                        <Typography variant="body2" sx={{ 
-                          color: '#6a1b9a',
-                          bgcolor: '#f3e5f5',
-                          px: 1.5,
-                          py: 0.5,
-                          borderRadius: 1
-                        }}>
-                          {`Department: ${meeting.department || 'Not specified'}`}
-                        </Typography>
-                      </Box>
-                      
-                      <Typography variant="body2" sx={{ 
-                        color: isToday ? 'success.main' : 'info.main',
-                        fontWeight: 'bold',
-                        mt: 2
-                      }}>
-                        {isToday ? 'Today\'s Meeting' : 'Upcoming Meeting'}
-                      </Typography>
-                    </CardContent>
-                  </Card>
-                </Grid>
-              );
-            })}
-          </Grid>
+                      return (
+                        <TableRow 
+                          key={meeting.id || Math.random().toString(36).substr(2, 9)}
+                          sx={{ '&:last-child td, &:last-child th': { border: 0 } }}
+                        >
+                          <TableCell component="th" scope="row">
+                            {meeting.title}
+                          </TableCell>
+                          <TableCell>{formattedDate}</TableCell>
+                          <TableCell>{`${meeting.startTime || '00:00'} - ${meeting.endTime || '00:00'}`}</TableCell>
+                          <TableCell>{departmentName}</TableCell>
+                          <TableCell>
+                            <Chip 
+                              label={meeting.status || 'Scheduled'} 
+                              size="small"
+                              sx={{ 
+                                bgcolor: 
+                                  meeting.status === 'completed' ? '#e8f5e9' : 
+                                  meeting.status === 'cancelled' ? '#ffebee' : 
+                                  meeting.status === 'in-progress' ? '#fff3e0' : '#e3f2fd',
+                                color: 
+                                  meeting.status === 'completed' ? '#2e7d32' : 
+                                  meeting.status === 'cancelled' ? '#c62828' : 
+                                  meeting.status === 'in-progress' ? '#ef6c00' : '#0277bd',
+                                textTransform: 'capitalize'
+                              }} 
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Button 
+                              variant="outlined"
+                              color="primary"
+                              size="small"
+                              onClick={() => handleFetchQuestions(meeting.id)}
+                              startIcon={<FeedbackIcon />}
+                            >
+                              Feedback
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            ) : (
+              <Box sx={{ textAlign: 'center', py: 4 }}>
+                <Typography variant="body1" color="textSecondary">
+                  No meetings scheduled at this time.
+                </Typography>
+                <Button 
+                  variant="outlined" 
+                  color="primary"
+                  onClick={() => fetchMeetingsDirectly()}
+                  sx={{ mt: 2 }}
+                >
+                  Refresh Meetings
+                </Button>
+              </Box>
+            )}
+          </>
         )}
-      </Box>
+      </Paper>
     );
+  };
+
+  // Helper function to get department name by ID
+  const getDepartmentNameById = (id) => {
+    if (!id) return null;
+    
+    const departmentMap = {
+      1: 'Computer Science and Engineering',
+      2: 'Information Technology',
+      3: 'Electronics and Communication',
+      4: 'Electrical Engineering',
+      5: 'Mechanical Engineering'
+    };
+    
+    return departmentMap[id] || `Department ${id}`;
   };
 
   // Update the tabs array
