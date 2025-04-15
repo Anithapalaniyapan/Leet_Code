@@ -55,6 +55,40 @@ import {
   hideSnackbar 
 } from '../../redux/slices/uiSlice';
 
+// Configure axios defaults and interceptors
+axios.defaults.baseURL = 'http://localhost:8080/api';
+
+// Add request interceptor for all axios requests
+axios.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      config.headers = {
+        ...config.headers,
+        'x-access-token': token,
+        'Content-Type': 'application/json'
+      };
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Add response interceptor to handle auth errors
+axios.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      // Clear local storage and redirect to login
+      localStorage.clear();
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
 const StaffDashboard = () => {
   const navigate = useNavigate();
   const dispatch = useDispatch();
@@ -87,66 +121,66 @@ const StaffDashboard = () => {
   // Check authentication and role on component mount
   useEffect(() => {
     const checkAuthAndLoadData = async () => {
+      const token = localStorage.getItem('token');
       if (!token) {
         console.log('No token found, redirecting to login');
         navigate('/login');
         return;
       }
-      
-      // Normalize and check role - be flexible with role format
-      const normalizedRole = userRole ? userRole.toLowerCase() : '';
-      const isStaffRole = 
-        normalizedRole === 'staff' || 
-        normalizedRole === 'faculty' || 
-        normalizedRole === 'teacher' ||
-        normalizedRole.includes('staff');
-      
-      if (!isStaffRole) {
-        console.log(`Invalid role for staff dashboard: ${userRole}`);
-        dispatch(showSnackbar({
-          message: 'You do not have permission to access this dashboard',
-          severity: 'error'
-        }));
-        navigate('/login');
-        return;
-      }
-      
-      console.log('Authentication successful for Staff Dashboard');
-      
+
       try {
-        // Fetch user profile
-        await dispatch(fetchUserProfile()).unwrap();
+        // Verify token by making a test request
+        const response = await axios.get('/users/profile');
+        if (!response.data) {
+          throw new Error('Invalid profile response');
+        }
+
+        // Update user data in localStorage
+        localStorage.setItem('userData', JSON.stringify(response.data));
         
-        // Make sure the userRole is stored in localStorage for meeting filtering
+        // Normalize and check role
+        const normalizedRole = response.data.roles?.[0]?.name?.toLowerCase() || '';
+        const isStaffRole = 
+          normalizedRole === 'staff' || 
+          normalizedRole === 'faculty' || 
+          normalizedRole === 'teacher' ||
+          normalizedRole.includes('staff');
+        
+        if (!isStaffRole) {
+          console.log(`Invalid role for staff dashboard: ${normalizedRole}`);
+          dispatch(showSnackbar({
+            message: 'You do not have permission to access this dashboard',
+            severity: 'error'
+          }));
+          navigate('/login');
+          return;
+        }
+        
+        console.log('Authentication successful for Staff Dashboard');
+        
+        // Store role in localStorage
         localStorage.setItem('userRole', 'staff');
         
-        // Always use direct API call first and only fall back to Redux action if needed
-        console.log('Staff Dashboard: Attempting to fetch meetings directly from user-specific endpoint');
-        const fetchedDirectly = await fetchMeetingsDirectly();
+        // Fetch meetings
+        await fetchMeetingsDirectly();
         
-        // Only if direct call fails, try Redux action
-        if (!fetchedDirectly) {
-          console.log('Staff Dashboard: Direct API call failed, trying Redux action');
-          await dispatch(fetchMeetings()).unwrap();
-        }
       } catch (error) {
-        console.error('Error initializing staff dashboard:', error);
-        // If Redux fails, try direct API call
-        await fetchUserProfileDirectly();
-        if (!meetings || !meetings.pastMeetings || !meetings.currentMeetings || !meetings.futureMeetings) {
-          console.log('Staff Dashboard: Trying direct meeting fetch as last resort');
-          await fetchMeetingsDirectly();
-        }
+        console.error('Authentication error:', error.response?.data || error.message);
+        localStorage.removeItem('token');
+        localStorage.removeItem('userData');
+        navigate('/login');
       }
     };
 
     checkAuthAndLoadData();
-  }, [dispatch, navigate, token, userRole]);
+  }, [dispatch, navigate]);
 
   // Direct API call as fallback for profile loading
   const fetchUserProfileDirectly = async () => {
       try {
         const token = localStorage.getItem('token');
+        console.log('Token found:', token ? 'Yes' : 'No');
+        
         if (!token) {
         console.error('No token found for direct profile fetch');
           return;
@@ -227,56 +261,40 @@ const StaffDashboard = () => {
     setQuestionsError('');
     
     try {
-      const token = localStorage.getItem('token');
-      if (!token) {
-        throw new Error('No authentication token found');
-      }
-
       // Get user data from localStorage
       const userData = JSON.parse(localStorage.getItem('userData')) || {};
       console.log('Staff userData:', userData);
 
-      // Get department ID, checking all possible paths
+      // Get department ID
       const departmentId = userData.departmentId || 
                           (userData.department?.id) || 
                           (typeof userData.department === 'number' ? userData.department : null);
 
       if (!departmentId) {
-        console.error('Department ID not found in user data:', userData);
         throw new Error('Department ID not found in your profile');
       }
 
-      console.log('Fetching questions for staff department:', departmentId);
+      console.log('Fetching questions for department:', departmentId);
 
-      // Make the API call with role and department parameters
-      const response = await axios.get(
-        'http://localhost:8080/api/questions/staff',
-        {
-          params: {
-            departmentId: departmentId
-          },
-          headers: {
-            'x-access-token': token
-          }
+      // Make the API call
+      const response = await axios.get(`/questions/department/${departmentId}`, {
+        params: {
+          role: 'staff'
         }
-      );
+      });
 
       console.log('Questions API Response:', response.data);
 
       if (response.data && Array.isArray(response.data)) {
-        // Filter questions to ensure we only get staff questions
         const staffQuestions = response.data.filter(question => {
           const isStaffQuestion = 
             question.role?.toLowerCase() === 'staff' ||
             question.role?.toLowerCase() === 'both' ||
-            question.roleId === 2 || // staff roleId
+            question.roleId === 2 ||
             question.targetRole?.toLowerCase() === 'staff';
           
-          console.log(`Question ${question.id}: ${isStaffQuestion ? 'is' : 'is not'} a staff question`);
           return isStaffQuestion;
         });
-
-        console.log('Filtered staff questions:', staffQuestions);
 
         if (staffQuestions.length === 0) {
           setQuestionsError('No questions available for staff in your department');
@@ -287,13 +305,11 @@ const StaffDashboard = () => {
           return;
         }
 
-        // Update Redux state with filtered questions
         dispatch({
           type: 'questions/setQuestions',
           payload: staffQuestions
         });
         
-        // Initialize ratings state for new questions
         const newRatings = {};
         staffQuestions.forEach(question => {
           newRatings[question.id] = 0;
@@ -301,13 +317,10 @@ const StaffDashboard = () => {
         setLocalRatings(newRatings);
         setQuestionsError('');
       } else {
-        console.log('Invalid response format:', response.data);
         throw new Error('Invalid response format from server');
       }
     } catch (error) {
       console.error('Error fetching questions:', error);
-      console.error('Error details:', error.response?.data);
-      
       const errorMessage = error.response?.data?.message || 
                           error.message || 
                           'Failed to fetch questions. Please try again later.';
@@ -365,7 +378,7 @@ const StaffDashboard = () => {
         throw new Error('No authentication token found');
       }
 
-      await axios.post('http://localhost:8080/api/feedback', feedbackData, {
+      await axios.post('/feedback', feedbackData, {
         headers: {
           'x-access-token': token
         }
@@ -414,23 +427,12 @@ const StaffDashboard = () => {
         throw new Error('No authentication token found for meeting fetch');
       }
       
-      // Make direct API call to the user-specific endpoint
-      const response = await fetch('http://localhost:8080/api/meetings/user/current', {
-        method: 'GET',
-        headers: {
-          'x-access-token': token,
-          'Content-Type': 'application/json'
-        }
-      });
-      
-      if (!response.ok) {
-        throw new Error(`API request failed with status ${response.status}`);
-      }
-      
-      const meetingsData = await response.json();
-      console.log('Staff Dashboard: Raw meetings data from API:', meetingsData);
+      // Make direct API call using axios instead of fetch
+      const response = await axios.get('/meetings/user/current');
+      console.log('Staff Dashboard: Raw meetings data from API:', response.data);
       
       // Process the response based on its structure
+      const meetingsData = response.data;
       if (meetingsData) {
         console.log('Staff Dashboard: Successfully fetched meetings from API');
         
@@ -480,23 +482,21 @@ const StaffDashboard = () => {
         dispatch({
           type: 'meetings/setMeetings',
           payload: {
-            pastMeetings: pastMeetings,
-            currentMeetings: currentMeetings,
-            futureMeetings: futureMeetings
+            pastMeetings,
+            currentMeetings,
+            futureMeetings
           }
         });
         
-        // Also store in localStorage for persistence across refreshes
+        // Store in localStorage for persistence across refreshes
         localStorage.setItem('staffMeetings', JSON.stringify(allMeetings));
         console.log('Staff Dashboard: Saved meetings to localStorage');
         
         return true;
-      } else {
-        console.error('Staff Dashboard: Invalid meetings data format:', meetingsData);
-        return false;
       }
+      return false;
     } catch (error) {
-      console.error('Staff Dashboard: Error fetching meetings from API:', error);
+      console.error('Staff Dashboard: Error fetching meetings from API:', error.response || error);
       
       // Try loading from localStorage as a last resort
       try {
@@ -531,9 +531,9 @@ const StaffDashboard = () => {
     dispatch({
       type: 'meetings/setMeetings',
       payload: {
-                pastMeetings: pastMeetings,
-                currentMeetings: currentMeetings,
-                futureMeetings: futureMeetings
+                pastMeetings,
+                currentMeetings,
+                futureMeetings
               }
             });
             
@@ -679,18 +679,46 @@ const StaffDashboard = () => {
             </Typography>
           </Box>
           {questions.map((question) => (
-            <Box key={question.id} sx={{ mb: 4 }}>
-              <Typography variant="body1" gutterBottom>
+            <Box 
+              key={question.id} 
+              sx={{ 
+                mb: 4,
+                p: 3,
+                border: '1px solid #e0e0e0',
+                borderRadius: 1,
+                '&:hover': {
+                  backgroundColor: '#f5f5f5'
+                }
+              }}
+            >
+              <Typography 
+                variant="body1" 
+                gutterBottom
+                sx={{ 
+                  fontWeight: 500,
+                  color: '#1A2137'
+                }}
+              >
                 {question.text}
               </Typography>
-              <Rating
-                name={`rating-${question.id}`}
-                value={localRatings[question.id] || 0}
-                onChange={(event, newValue) => handleRatingChange(question.id, newValue)}
-                size="medium"
-                precision={1}
-                sx={{ color: '#FFD700', mt: 1 }}
-              />
+              <Box sx={{ mt: 2, display: 'flex', alignItems: 'center' }}>
+                <Typography variant="body2" color="textSecondary" sx={{ mr: 2 }}>
+                  Your Rating:
+                </Typography>
+                <Rating
+                  name={`rating-${question.id}`}
+                  value={localRatings[question.id] || 0}
+                  onChange={(event, newValue) => handleRatingChange(question.id, newValue)}
+                  size="medium"
+                  precision={1}
+                  sx={{ 
+                    color: '#FFD700',
+                    '& .MuiRating-iconFilled': {
+                      color: '#FFD700'
+                    }
+                  }}
+                />
+              </Box>
             </Box>
           ))}
           
